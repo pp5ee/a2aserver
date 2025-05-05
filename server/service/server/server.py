@@ -1,0 +1,528 @@
+import asyncio
+import base64
+import threading
+import os
+import uuid
+import logging
+from typing import Any, Optional
+from fastapi import APIRouter
+from fastapi import Request, Response
+from common.types import Message, Task, FilePart, FileContent, TaskStatus, TaskState, Artifact
+from .in_memory_manager import InMemoryFakeAgentManager
+from .application_manager import ApplicationManager
+from .adk_host_manager import ADKHostManager, get_message_id
+from .user_session_manager import UserSessionManager
+from service.types import (
+    Conversation,
+    Event,
+    CreateConversationResponse,
+    ListConversationResponse,
+    SendMessageResponse,
+    MessageInfo,
+    ListMessageResponse,
+    PendingMessageResponse,
+    ListTaskResponse,
+    RegisterAgentResponse,
+    ListAgentResponse,
+    GetEventResponse
+)
+import secrets
+import re
+import dotenv
+import hashlib
+import json
+from fastapi import FastAPI, APIRouter, Request, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
+from typing import Awaitable, Callable, List, Optional, Tuple, Union, Dict
+import datetime
+
+# 配置日志
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class ConversationServer:
+  """ConversationServer是用于在UI中提供代理交互的后端
+
+  这定义了Mesop系统用于与代理交互和提供有关执行详细信息的接口。
+  现在支持多用户，每个用户有独立的代理环境。
+  """
+  def __init__(self, router: APIRouter):
+    agent_manager = os.environ.get("A2A_HOST", "ADK")
+    self.default_manager: ApplicationManager
+    self.use_multi_user = True  # 启用多用户模式
+    
+    # 获取API密钥环境变量
+    api_key = os.environ.get("GOOGLE_API_KEY", "")
+    if not api_key:
+        # 如果环境变量中没有API密钥，设置一个默认值以避免会话错误
+        api_key = "default_key_placeholder"
+        os.environ["GOOGLE_API_KEY"] = api_key
+        logger.warning("未设置API密钥，使用占位符。某些功能可能不可用。")
+    
+    uses_vertex_ai = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").upper() == "TRUE"
+    
+    # 日志记录API设置
+    if uses_vertex_ai:
+      logger.info("使用Vertex AI认证")
+    elif api_key:
+      # 隐藏完整的API key，只显示前5位和后5位
+      masked_key = f"{api_key[:5]}...{api_key[-5:]}" if len(api_key) > 10 else "***"
+      logger.info(f"使用API Key认证: {masked_key}")
+    
+    # 初始化默认管理器
+    if agent_manager.upper() == "ADK":
+      self.default_manager = ADKHostManager(api_key=api_key, uses_vertex_ai=uses_vertex_ai)
+    else:
+      self.default_manager = InMemoryFakeAgentManager()
+      
+    # 初始化用户会话管理器
+    if self.use_multi_user:
+      self.user_session_manager = UserSessionManager.get_instance()
+      
+    self._file_cache = {} # dict[str, FilePart] maps file id to message data
+    self._message_to_cache = {} # dict[str, str] maps message id to cache id
+
+    router.add_api_route(
+        "/conversation/create",
+        self._create_conversation,
+        methods=["POST"])
+    router.add_api_route(
+        "/conversation/list",
+        self._list_conversation,
+        methods=["POST"])
+    router.add_api_route(
+        "/conversation/delete",
+        self._delete_conversation,
+        methods=["POST"])
+    router.add_api_route(
+        "/message/send",
+        self._send_message,
+        methods=["POST"])
+    router.add_api_route(
+        "/events/get",
+        self._get_events,
+        methods=["POST"])
+    router.add_api_route(
+        "/message/list",
+        self._list_messages,
+        methods=["POST"])
+    router.add_api_route(
+        "/message/pending",
+        self._pending_messages,
+        methods=["POST"])
+    router.add_api_route(
+        "/task/list",
+        self._list_tasks,
+        methods=["POST"])
+    # 注释掉代理注册接口 - 暂不支持该功能
+    # router.add_api_route(
+    #     "/agent/register",
+    #     self._register_agent,
+    #     methods=["POST"])
+    router.add_api_route(
+        "/agent/list",
+        self._list_agents,
+        methods=["POST"])
+    router.add_api_route(
+        "/message/file/{file_id}",
+        self._files,
+        methods=["GET"])
+    # router.add_api_route(
+    #     "/api_key/update",
+    #     self._update_api_key,
+    #     methods=["POST"])
+    # 添加历史会话查询API
+    router.add_api_route(
+        "/history/conversations",
+        self._get_user_history_conversations,
+        methods=["GET"])
+    router.add_api_route(
+        "/history/messages/{conversation_id}",
+        self._get_history_messages,
+        methods=["GET"])
+        
+    # 启动定期清理任务
+    if self.use_multi_user:
+      threading.Thread(target=self._run_cleanup_task, daemon=True).start()
+
+  def _get_wallet_address(self, request: Request) -> Optional[str]:
+    """从请求头中获取钱包地址"""
+    wallet_address = request.headers.get('X-Solana-PublicKey')
+    if not wallet_address:
+      logger.warning("请求中缺少钱包地址")
+    return wallet_address
+    
+  def _get_user_manager(self, request: Request) -> ApplicationManager:
+    """获取用户特定的管理器"""
+    if not self.use_multi_user:
+      return self.default_manager
+      
+    wallet_address = self._get_wallet_address(request)
+    if not wallet_address:
+      logger.warning("使用默认管理器处理请求")
+      return self.default_manager
+      
+    return self.user_session_manager.get_host_manager(wallet_address)
+    
+  def _run_cleanup_task(self):
+    """定期运行清理任务"""
+    import time
+    while True:
+      try:
+        # 每30分钟清理一次不活跃会话
+        time.sleep(30 * 60)
+        if self.use_multi_user:
+          self.user_session_manager.cleanup_inactive_sessions(timeout_minutes=60)
+      except Exception as e:
+        logger.error(f"清理任务出错: {e}")
+
+  # 更新管理器中的API密钥
+  def update_api_key(self, api_key: str):
+    if isinstance(self.default_manager, ADKHostManager):
+      self.default_manager.update_api_key(api_key)
+
+  async def _create_conversation(self, request: Request):
+    # 获取用户钱包地址
+    wallet_address = self._get_wallet_address(request)
+    
+    # 如果启用了多用户模式，检查用户会话数量限制
+    if self.use_multi_user and wallet_address:
+      # 检查用户的会话数量
+      conversation_count = self.user_session_manager.get_user_conversation_count(wallet_address)
+      if conversation_count >= 5:
+        logger.warning(f"用户 {wallet_address} 的会话数量已达到上限(5个)")
+        return {
+          "error": "You have reached the maximum number of conversations (5). Please delete some conversations before creating a new one."
+        }
+    
+    manager = self._get_user_manager(request)
+    c = manager.create_conversation()
+    
+    # 如果是多用户模式，保存会话记录到数据库
+    if self.use_multi_user:
+      wallet_address = self._get_wallet_address(request)
+      if wallet_address:
+        self.user_session_manager.save_conversation(
+          wallet_address=wallet_address,
+          conversation_id=c.conversation_id,
+          name=c.name if hasattr(c, 'name') else "",
+          is_active=c.is_active
+        )
+    
+    return CreateConversationResponse(result=c)
+
+  async def _send_message(self, request: Request):
+    message_data = await request.json()
+    message = Message(**message_data['params'])
+    
+    # 获取用户钱包地址
+    wallet_address = self._get_wallet_address(request)
+    
+    # 如果是多用户模式且有钱包地址，先刷新用户的代理列表
+    if self.use_multi_user and wallet_address:
+      self.user_session_manager.refresh_user_agents(wallet_address)
+    
+    # 获取用户的管理器
+    manager = self._get_user_manager(request)
+    message = manager.sanitize_message(message)
+    
+    # 在消息元数据中添加钱包地址信息，用于代理响应时确定消息所属用户
+    if self.use_multi_user and wallet_address and message.metadata:
+      message.metadata['wallet_address'] = wallet_address
+    
+    # 如果是多用户模式，保存消息到数据库
+    conversation_id = message.metadata.get('conversation_id', '')
+    if self.use_multi_user and wallet_address and conversation_id:
+      # 保存消息
+      self.user_session_manager.save_message_from_object(
+        wallet_address=wallet_address,
+        message=message
+      )
+      
+      # 限制会话消息数量，只保留最新的10条
+      self.user_session_manager.limit_conversation_messages(
+        wallet_address=wallet_address,
+        conversation_id=conversation_id,
+        max_messages=10  # 保留最新的10条消息
+      )
+    
+    t = threading.Thread(target=lambda: asyncio.run(manager.process_message(message)))
+    t.start()
+    
+    return SendMessageResponse(result=MessageInfo(
+        message_id=message.metadata['message_id'],
+        conversation_id=message.metadata['conversation_id'] if 'conversation_id' in message.metadata else '',
+    ))
+
+  async def _list_messages(self, request: Request):
+    message_data = await request.json()
+    conversation_id = message_data['params']
+    
+    manager = self._get_user_manager(request)
+    conversation = manager.get_conversation(conversation_id)
+    
+    if conversation:
+      return ListMessageResponse(result=self.cache_content(
+          conversation.messages))
+    return ListMessageResponse(result=[])
+
+  def cache_content(self, messages: list[Message]):
+    rval = []
+    for m in messages:
+      message_id = get_message_id(m)
+      if not message_id:
+        rval.append(m)
+        continue
+      new_parts = []
+      for i, part in enumerate(m.parts):
+        if part.type != 'file':
+          new_parts.append(part)
+          continue
+        message_part_id = f"{message_id}:{i}"
+        if message_part_id in self._message_to_cache:
+          cache_id = self._message_to_cache[message_part_id]
+        else:
+          cache_id = str(uuid.uuid4())
+          self._message_to_cache[message_part_id] = cache_id
+        # Replace the part data with a url reference
+        new_parts.append(FilePart(
+            file=FileContent(
+                mimeType=part.file.mimeType,
+                uri=f"/message/file/{cache_id}",
+            )
+        ))
+        if cache_id not in self._file_cache:
+          self._file_cache[cache_id] = part
+      m.parts = new_parts
+      rval.append(m)
+    return rval
+
+  async def _pending_messages(self, request: Request):
+    manager = self._get_user_manager(request)
+    return PendingMessageResponse(result=manager.get_pending_messages())
+
+  async def _list_conversation(self, request: Request):
+    manager = self._get_user_manager(request)
+    return ListConversationResponse(result=manager.conversations)
+
+  async def _get_events(self, request: Request):
+    manager = self._get_user_manager(request)
+    return GetEventResponse(result=manager.events)
+
+  async def _list_tasks(self, request: Request):
+    manager = self._get_user_manager(request)
+    
+    # 获取用户钱包地址
+    wallet_address = self._get_wallet_address(request)
+    
+    # 现有逻辑：从内存中获取任务
+    memory_tasks = manager.tasks
+    
+    # 如果是多用户模式且有钱包地址，尝试从数据库获取更多任务信息
+    if self.use_multi_user and wallet_address:
+      try:
+        # 获取用户的所有会话
+        user_session_manager = UserSessionManager.get_instance()
+        conversations = user_session_manager.get_user_conversations(wallet_address)
+        
+        # 如果数据库中有会话但运行在内存模式，仅返回内存中的任务
+        if user_session_manager._memory_mode:
+          return ListTaskResponse(result=memory_tasks)
+        
+        # 逐个会话获取任务
+        db_tasks = []
+        for conv in conversations:
+          # 获取会话ID
+          conversation_id = conv.conversation_id if hasattr(conv, 'conversation_id') else conv.get('conversation_id')
+          if conversation_id:
+            # 获取会话相关的任务
+            tasks = user_session_manager.get_conversation_tasks(conversation_id)
+            if tasks:
+              db_tasks.extend(tasks)
+        
+        # 合并内存中的任务和数据库中的任务，确保没有重复
+        if db_tasks:
+          # 转换数据库任务为Task对象
+          from common.types import Task, TaskStatus, TaskState
+          from datetime import datetime
+          
+          # 获取内存中任务的ID列表
+          memory_task_ids = [t.id for t in memory_tasks]
+          
+          # 将数据库中的任务添加到结果中（如果不在内存中）
+          for db_task in db_tasks:
+            if db_task['id'] not in memory_task_ids:
+              # 创建一个基本的Task对象
+              try:
+                status = TaskStatus(
+                  state=db_task['state'] if db_task['state'] else TaskState.UNKNOWN,
+                  timestamp=datetime.now()
+                )
+                
+                task = Task(id=db_task['id'], sessionId=db_task['sessionId'], status=status)
+                
+                # 添加到结果列表
+                memory_tasks.append(task)
+              except Exception as e:
+                print(f"转换数据库任务时出错: {e}")
+      except Exception as e:
+        # 错误处理不应影响现有流程
+        print(f"获取数据库任务时出错: {e}")
+    
+    # 返回合并后的任务列表
+    return ListTaskResponse(result=memory_tasks)
+
+  # 注释掉代理注册方法 - 暂不支持该功能
+  # async def _register_agent(self, request: Request):
+  #   message_data = await request.json()
+  #   url = message_data['params']
+  #   
+  #   wallet_address = self._get_wallet_address(request)
+  #   
+  #   if self.use_multi_user and wallet_address:
+  #     # 使用用户会话管理器注册代理
+  #     self.user_session_manager.register_agent(wallet_address, url)
+  #   else:
+  #     # 使用默认管理器
+  #     self.default_manager.register_agent(url)
+  #     
+  #   return RegisterAgentResponse()
+
+  async def _list_agents(self, request: Request):
+    # 获取用户钱包地址
+    wallet_address = self._get_wallet_address(request)
+    
+    # 如果是多用户模式且有钱包地址，先刷新用户的代理列表
+    if self.use_multi_user and wallet_address:
+      self.user_session_manager.refresh_user_agents(wallet_address)
+    
+    manager = self._get_user_manager(request)
+    return ListAgentResponse(result=manager.agents)
+
+  async def _files(self, file_id: str, request: Request):
+    if file_id not in self._file_cache:
+      raise Exception("file not found")
+    part = self._file_cache[file_id]
+    if "image" in part.file.mimeType:
+      return Response(
+          content=base64.b64decode(part.file.bytes),
+          media_type=part.file.mimeType)
+    return Response(content=part.file.bytes, media_type=part.file.mimeType)
+  
+  async def _update_api_key(self, request: Request):
+    """更新API密钥"""
+    try:
+        data = await request.json()
+        api_key = data.get("api_key", "")
+        
+        if not api_key:
+            return {"status": "error", "message": "No valid API key provided"}
+            
+        # 更新环境变量
+        os.environ["GOOGLE_API_KEY"] = api_key
+        # 记录API key已更新（隐藏完整密钥）
+        masked_key = f"{api_key[:5]}...{api_key[-5:]}" if len(api_key) > 10 else "***" 
+        logger.info(f"已全局更新API密钥: {masked_key}")
+        
+        # 更新默认管理器中的API密钥
+        self.update_api_key(api_key)
+        
+        # 如果是多用户模式，同时更新所有用户的API密钥
+        if self.use_multi_user:
+            for wallet_address, manager in self.user_session_manager._host_managers.items():
+                if isinstance(manager, ADKHostManager):
+                    manager.api_key = api_key
+                    logger.info(f"已更新用户 {wallet_address} 的API密钥")
+        
+        return {"status": "success", "message": "API key has been updated globally"}
+    except Exception as e:
+        logger.error(f"更新API密钥时出错: {e}")
+        return {"status": "error", "message": str(e)}
+
+  async def _get_user_history_conversations(self, request: Request):
+    """获取用户的历史会话列表"""
+    wallet_address = self._get_wallet_address(request)
+    
+    if not self.use_multi_user or not wallet_address:
+      return {"result": []}
+      
+    try:
+      conversations = self.user_session_manager.get_user_conversations(wallet_address)
+      return {"result": conversations}
+    except Exception as e:
+      logger.error(f"获取历史会话列表时出错: {e}")
+      return {"result": [], "error": str(e)}
+      
+  async def _get_history_messages(self, conversation_id: str, request: Request):
+    """获取会话的历史消息"""
+    wallet_address = self._get_wallet_address(request)
+    
+    if not self.use_multi_user:
+      return {"result": []}
+      
+    try:
+      # 查询会话所属的钱包地址
+      if not wallet_address:
+        wallet_address = self.user_session_manager.get_conversation_wallet_address(conversation_id)
+        
+      if not wallet_address:
+        return {"result": [], "error": "Unable to determine conversation owner"}
+        
+      # 获取历史消息
+      messages = self.user_session_manager.get_conversation_messages(conversation_id)
+      return {"result": messages}
+    except Exception as e:
+      logger.error(f"获取历史消息时出错: {e}")
+      return {"result": [], "error": str(e)}
+
+  # 添加会话删除API
+  async def _delete_conversation(self, request: Request):
+    """删除会话接口"""
+    # 获取用户钱包地址
+    wallet_address = self._get_wallet_address(request)
+    if not wallet_address:
+      return {"error": "No valid wallet address provided", "status": "error", "code": 401}
+    
+    try:
+      # 获取会话ID
+      data = await request.json()
+      conversation_id = data.get("conversation_id")
+      if not conversation_id:
+        return {"error": "No conversation ID provided", "status": "error", "code": 400}
+      
+      # 多用户模式下，验证用户是否拥有该会话
+      if self.use_multi_user:
+        # 检查会话所属
+        owner_address = self.user_session_manager.get_conversation_wallet_address(conversation_id)
+        if owner_address and owner_address != wallet_address:
+          logger.warning(f"用户 {wallet_address} 尝试删除不属于自己的会话 {conversation_id}")
+          return {
+            "error": "You don't have permission to delete this conversation as you are not the owner", 
+            "status": "error", 
+            "code": 403
+          }
+        
+        # 调用删除方法
+        success = self.user_session_manager.delete_conversation(
+          wallet_address=wallet_address, 
+          conversation_id=conversation_id
+        )
+        
+        if success:
+          logger.info(f"用户 {wallet_address} 成功删除会话 {conversation_id}")
+          return {"status": "success", "message": f"Conversation {conversation_id} has been successfully deleted"}
+        else:
+          return {"error": "Failed to delete conversation, it may not exist", "status": "error", "code": 404}
+      else:
+        # 非多用户模式下，直接从管理器中删除会话
+        manager = self._get_user_manager(request)
+        conversations = manager._conversations
+        for i, conv in enumerate(conversations):
+          if conv.conversation_id == conversation_id:
+            del conversations[i]
+            return {"status": "success", "message": f"Conversation {conversation_id} has been successfully deleted"}
+        
+        return {"error": "Conversation not found", "status": "error", "code": 404}
+    except Exception as e:
+      logger.error(f"删除会话时出错: {str(e)}")
+      return {"error": f"Error deleting conversation: {str(e)}", "status": "error", "code": 500}

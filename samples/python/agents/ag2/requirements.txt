@@ -1,0 +1,4 @@
+pyyaml>=6.0
+python-dotenv>=1.0.0
+autogen-agentchat>=0.2.11
+mcp-youtube>=0.1.0 

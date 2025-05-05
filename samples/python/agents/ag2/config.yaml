@@ -1,0 +1,22 @@
+# LLM配置
+llm:
+  # OpenRouter API配置
+  base_url: "https://openrouter.ai/api/v1"
+  # 你的API密钥，请替换为你自己的密钥
+  api_key: "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" 
+  # 想要使用的模型，例如：
+  # - "anthropic/claude-3-opus:beta"
+  # - "anthropic/claude-3-sonnet"
+  # - "meta-llama/llama-3-70b-instruct"
+  # - "google/gemma-7b-it"
+  model: "anthropic/claude-3-opus:beta"
+
+# 或者，你也可以直接在顶层配置这些参数：
+# base_url: "https://openrouter.ai/api/v1"
+# api_key: "your_openrouter_api_key_here"
+# model: "anthropic/claude-3-opus:beta"
+
+# 注意: 你也可以使用环境变量设置这些参数:
+# - LLM_BASE_URL: API基础URL
+# - LLM_API_KEY: API密钥
+# - LLM_MODEL: 模型名称 

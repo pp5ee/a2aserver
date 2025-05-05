@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width,initial-scale=1.0">
+    <link rel="icon" href="<%= BASE_URL %>favicon.ico">
+    <title><%= htmlWebpackPlugin.options.title %></title>
+    <!-- Material Icons -->
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&display=swap" rel="stylesheet">
+    <!-- Solana Web3.js 脚本 -->
+    <script src="<%= BASE_URL %>solana-web3.js"></script>
+    <!-- Font Awesome 图标库 -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+    <!-- 检测Phantom钱包 -->
+    <script>
+      window.addEventListener('load', function() {
+        if (typeof window.solana !== 'undefined') {
+          console.log('Phantom 钱包已检测到');
+        } else {
+          console.log('未检测到 Phantom 钱包，某些功能可能不可用');
+        }
+      });
+    </script>
+  </head>
+  <body>
+    <noscript>
+      <strong>很抱歉，<%= htmlWebpackPlugin.options.title %> 需要启用JavaScript才能正常工作。请启用它后继续。</strong>
+    </noscript>
+    <div id="app"></div>
+    <!-- built files will be auto injected -->
+  </body>
+</html> 

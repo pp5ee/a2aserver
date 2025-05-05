@@ -1,0 +1,572 @@
+openapi: 3.0.3
+info:
+  title: Demo3 API Documentation
+  description: API documentation for the Demo3 module of A2A project with Solana wallet authentication.
+  version: 1.0.0
+  contact:
+    name: A2A Team
+
+servers:
+  - url: http://localhost:12000
+    description: Local development server
+
+components:
+  securitySchemes:
+    SolanaAuth:
+      type: apiKey
+      in: header
+      name: X-Solana-PublicKey
+      description: Solana wallet public key
+    SolanaNonce:
+      type: apiKey
+      in: header
+      name: X-Solana-Nonce
+      description: Timestamp in milliseconds for signature expiry
+    SolanaSignature:
+      type: apiKey
+      in: header
+      name: X-Solana-Signature
+      description: Base64 encoded signature signed by wallet
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+        status:
+          type: string
+          enum: [error]
+        code:
+          type: integer
+          description: HTTP status code
+
+    Conversation:
+      type: object
+      properties:
+        conversation_id:
+          type: string
+          description: Unique identifier for the conversation
+        is_active:
+          type: boolean
+          description: Whether the conversation is active
+        name:
+          type: string
+          description: Name of the conversation
+        task_ids:
+          type: array
+          items:
+            type: string
+          description: List of task IDs associated with the conversation
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+          description: List of messages in the conversation
+    
+    Message:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+          description: Role of the message sender
+        content:
+          type: string
+          description: Content of the message
+        parts:
+          type: array
+          items:
+            type: object
+          description: Message parts including text and files
+        metadata:
+          type: object
+          properties:
+            message_id:
+              type: string
+            conversation_id:
+              type: string
+            timestamp:
+              type: string
+              format: date-time
+          description: Metadata associated with the message
+    
+    MessageInfo:
+      type: object
+      properties:
+        message_id:
+          type: string
+          description: Unique identifier for the message
+        conversation_id:
+          type: string
+          description: Identifier for the conversation
+
+    Task:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique identifier for the task
+        sessionId:
+          type: string
+          description: Session identifier
+        status:
+          type: object
+          properties:
+            state:
+              type: string
+              enum: [pending, in_progress, completed, failed, canceled]
+            timestamp:
+              type: string
+              format: date-time
+          description: Status of the task
+    
+    AgentCard:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique identifier for the agent
+        name:
+          type: string
+          description: Name of the agent
+        description:
+          type: string
+          description: Description of the agent
+        capabilities:
+          type: array
+          items:
+            type: string
+          description: List of agent capabilities
+    
+    Event:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique identifier for the event
+        actor:
+          type: string
+          description: Actor who triggered the event
+        content:
+          $ref: '#/components/schemas/Message'
+        timestamp:
+          type: number
+          format: float
+          description: Timestamp of the event
+
+security:
+  - SolanaAuth: []
+    SolanaNonce: []
+    SolanaSignature: []
+
+paths:
+  /conversation/create:
+    post:
+      summary: Create a new conversation
+      description: Creates a new conversation for the authenticated user
+      security:
+        - SolanaAuth: []
+          SolanaNonce: []
+          SolanaSignature: []
+      responses:
+        '200':
+          description: Conversation created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: '#/components/schemas/Conversation'
+        '401':
+          description: Unauthorized - invalid or expired signature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /conversation/list:
+    post:
+      summary: List all conversations
+      description: Lists all conversations for the authenticated user
+      security:
+        - SolanaAuth: []
+          SolanaNonce: []
+          SolanaSignature: []
+      responses:
+        '200':
+          description: List of conversations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Conversation'
+        '401':
+          description: Unauthorized - invalid or expired signature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /conversation/delete:
+    post:
+      summary: Delete a conversation
+      description: Deletes a specific conversation
+      security:
+        - SolanaAuth: []
+          SolanaNonce: []
+          SolanaSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                conversation_id:
+                  type: string
+                  description: ID of the conversation to delete
+              required:
+                - conversation_id
+      responses:
+        '200':
+          description: Conversation deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  message:
+                    type: string
+        '400':
+          description: Bad request - conversation ID not provided
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Unauthorized - invalid or expired signature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Forbidden - user doesn't own the conversation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /message/send:
+    post:
+      summary: Send a message
+      description: Sends a message in a conversation
+      security:
+        - SolanaAuth: []
+          SolanaNonce: []
+          SolanaSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                params:
+                  $ref: '#/components/schemas/Message'
+              required:
+                - params
+      responses:
+        '200':
+          description: Message sent successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    $ref: '#/components/schemas/MessageInfo'
+        '401':
+          description: Unauthorized - invalid or expired signature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /message/list:
+    post:
+      summary: List messages in a conversation
+      description: Lists all messages in a specific conversation
+      security:
+        - SolanaAuth: []
+          SolanaNonce: []
+          SolanaSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                params:
+                  type: string
+                  description: Conversation ID
+              required:
+                - params
+      responses:
+        '200':
+          description: List of messages
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Message'
+        '401':
+          description: Unauthorized - invalid or expired signature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /message/pending:
+    post:
+      summary: List pending messages
+      description: Lists all pending messages for processing
+      security:
+        - SolanaAuth: []
+          SolanaNonce: []
+          SolanaSignature: []
+      responses:
+        '200':
+          description: List of pending messages
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: array
+                    items:
+                      type: array
+                      items:
+                        type: string
+                    description: Array of [message_id, content] pairs
+        '401':
+          description: Unauthorized - invalid or expired signature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /task/list:
+    post:
+      summary: List tasks
+      description: Lists all tasks for the authenticated user
+      security:
+        - SolanaAuth: []
+          SolanaNonce: []
+          SolanaSignature: []
+      responses:
+        '200':
+          description: List of tasks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Task'
+        '401':
+          description: Unauthorized - invalid or expired signature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /agent/list:
+    post:
+      summary: List agents
+      description: Lists all available agents
+      security:
+        - SolanaAuth: []
+          SolanaNonce: []
+          SolanaSignature: []
+      responses:
+        '200':
+          description: List of agents
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AgentCard'
+        '401':
+          description: Unauthorized - invalid or expired signature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /events/get:
+    post:
+      summary: Get events
+      description: Gets all events for the authenticated user
+      security:
+        - SolanaAuth: []
+          SolanaNonce: []
+          SolanaSignature: []
+      responses:
+        '200':
+          description: List of events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Event'
+        '401':
+          description: Unauthorized - invalid or expired signature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /message/file/{file_id}:
+    get:
+      summary: Get file content
+      description: Gets the content of a file by its ID
+      parameters:
+        - name: file_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: ID of the file
+      responses:
+        '200':
+          description: File content
+          content:
+            '*/*':
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: File not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /history/conversations:
+    get:
+      summary: Get user history conversations
+      description: Gets the user's history conversations
+      security:
+        - SolanaAuth: []
+          SolanaNonce: []
+          SolanaSignature: []
+      responses:
+        '200':
+          description: List of history conversations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Conversation'
+        '401':
+          description: Unauthorized - invalid or expired signature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /history/messages/{conversation_id}:
+    get:
+      summary: Get history messages for a conversation
+      description: Gets the history messages for a specific conversation
+      security:
+        - SolanaAuth: []
+          SolanaNonce: []
+          SolanaSignature: []
+      parameters:
+        - name: conversation_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: ID of the conversation
+      responses:
+        '200':
+          description: List of history messages
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Message'
+        '401':
+          description: Unauthorized - invalid or expired signature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /health:
+    get:
+      summary: Health check
+      description: Checks the health status of the server
+      responses:
+        '200':
+          description: Server status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+                  multi_user:
+                    type: boolean
+                  memory_mode:
+                    type: boolean 
