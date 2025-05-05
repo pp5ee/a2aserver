@@ -28,7 +28,7 @@ dependencies = [
 packages = ["a2a_ui"]
 
 [tool.uv.sources]
-a2a-samples = { path = "../../samples/python", editable = true }
+a2a-samples = { path = "../samples/python", editable = true }
 
 [build-system]
 requires = ["hatchling"]

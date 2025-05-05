@@ -7,60 +7,9 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "a2a-python-example-ui"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "a2a-samples" },
-    { name = "asyncio" },
-    { name = "fastapi" },
-    { name = "google-adk" },
-    { name = "google-genai" },
-    { name = "httpx" },
-    { name = "httpx-sse" },
-    { name = "mesop" },
-    { name = "pandas" },
-    { name = "pydantic" },
-    { name = "pymysql" },
-    { name = "pynacl" },
-    { name = "python-dotenv" },
-    { name = "solana" },
-    { name = "solders" },
-    { name = "uvicorn" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "a2a-samples", editable = "../../samples/python" },
-    { name = "asyncio", specifier = ">=3.4.3" },
-    { name = "fastapi", specifier = ">=0.115.0" },
-    { name = "google-adk", specifier = ">=0.0.3" },
-    { name = "google-genai", specifier = ">=1.9.0" },
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "httpx-sse", specifier = ">=0.4.0" },
-    { name = "mesop", specifier = ">=1.0.0" },
-    { name = "pandas", specifier = ">=2.2.0" },
-    { name = "pydantic", specifier = ">=2.10.6" },
-    { name = "pymysql" },
-    { name = "pynacl", specifier = ">=1.5.0" },
-    { name = "python-dotenv" },
-    { name = "solana", specifier = ">=0.32.0" },
-    { name = "solders", specifier = ">=0.22.0" },
-    { name = "uvicorn", specifier = ">=0.34.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [{ name = "ruff", specifier = ">=0.11.2" }]
-
-[[package]]
 name = "a2a-samples"
 version = "0.1.0"
-source = { editable = "../../samples/python" }
+source = { editable = "../samples/python" }
 dependencies = [
     { name = "httpx" },
     { name = "httpx-sse" },
@@ -92,6 +41,59 @@ dev = [
     { name = "pytest-mock", specifier = ">=3.14.0" },
     { name = "ruff", specifier = ">=0.11.2" },
 ]
+
+[[package]]
+name = "a2a-server"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "a2a-samples" },
+    { name = "asyncio" },
+    { name = "fastapi" },
+    { name = "google-adk" },
+    { name = "google-genai" },
+    { name = "httpx" },
+    { name = "httpx-sse" },
+    { name = "mesop" },
+    { name = "pandas" },
+    { name = "pydantic" },
+    { name = "pymysql" },
+    { name = "pynacl" },
+    { name = "python-dotenv" },
+    { name = "pyyaml" },
+    { name = "solana" },
+    { name = "solders" },
+    { name = "uvicorn" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "a2a-samples", editable = "../samples/python" },
+    { name = "asyncio", specifier = ">=3.4.3" },
+    { name = "fastapi", specifier = ">=0.115.0" },
+    { name = "google-adk", specifier = ">=0.0.3" },
+    { name = "google-genai", specifier = ">=1.9.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "httpx-sse", specifier = ">=0.4.0" },
+    { name = "mesop", specifier = ">=1.0.0" },
+    { name = "pandas", specifier = ">=2.2.0" },
+    { name = "pydantic", specifier = ">=2.10.6" },
+    { name = "pymysql" },
+    { name = "pynacl", specifier = ">=1.5.0" },
+    { name = "python-dotenv" },
+    { name = "pyyaml", specifier = ">=6.0.1" },
+    { name = "solana", specifier = ">=0.32.0" },
+    { name = "solders", specifier = ">=0.22.0" },
+    { name = "uvicorn", specifier = ">=0.34.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "ruff", specifier = ">=0.11.2" }]
 
 [[package]]
 name = "absl-py"

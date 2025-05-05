@@ -1,4 +1,8 @@
 const { defineConfig } = require('@vue/cli-service')
+
+// 检查是否在Vercel环境中
+const isVercel = process.env.VERCEL === 'true'
+
 module.exports = defineConfig({
   transpileDependencies: true,
   lintOnSave: false,
@@ -23,5 +27,12 @@ module.exports = defineConfig({
         }
       }
     }
+  },
+  // 使用相对路径，这在Vercel部署中很重要
+  publicPath: isVercel ? '/' : '/',
+  // 构建配置
+  configureWebpack: {
+    // 添加环境变量注入
+    plugins: []
   }
 }) 

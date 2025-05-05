@@ -14,6 +14,11 @@
         <router-link to="/settings">设置</router-link>
       </nav>
       
+      <!-- API设置按钮（仅在Vercel环境显示） -->
+      <button v-if="isVercelEnv" @click="showApiConfig" class="api-config-btn">
+        <i class="fas fa-cog"></i> API配置
+      </button>
+      
       <!-- Phantom钱包组件 -->
       <div class="wallet-container">
         <phantom-wallet 
@@ -36,6 +41,9 @@
       <router-view />
     </main>
     
+    <!-- API URL配置组件 -->
+    <api-url-config ref="apiConfigComponent" />
+    
     <!-- 通知提示 -->
     <div v-if="notification" class="notification" :class="notification.type">
       <div class="notification-content">
@@ -50,10 +58,11 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, ref, onMounted, onUnmounted } from 'vue'
+import { defineComponent, ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { apiService } from './services/api'
 import PhantomWallet from './components/PhantomWallet.vue'
+import ApiUrlConfig from './components/ApiUrlConfig.vue'
 
 interface NotificationType {
   message: string;
@@ -63,10 +72,19 @@ interface NotificationType {
 export default defineComponent({
   name: 'App',
   components: {
-    PhantomWallet
+    PhantomWallet,
+    ApiUrlConfig
   },
   setup() {
     const route = useRoute()
+    const apiConfigComponent = ref<any>(null)
+    
+    // Vercel环境检测
+    const isVercelEnv = computed(() => {
+      return typeof window !== 'undefined' && 
+             (window.location.hostname.includes('vercel.app') || 
+              window?.location?.hostname?.includes?.('localhost') && (window as any)._debugVercelEnv);
+    })
     
     // API连接状态
     const apiError = ref(false)
@@ -175,6 +193,13 @@ export default defineComponent({
       return iconMap[notification.value?.type || 'info']
     }
     
+    // 显示API配置
+    const showApiConfig = () => {
+      if (apiConfigComponent.value) {
+        apiConfigComponent.value.showConfigPanel();
+      }
+    }
+    
     // 组件挂载
     onMounted(() => {
       // 检查API连接
@@ -228,7 +253,12 @@ export default defineComponent({
       // 通知
       notification,
       clearNotification,
-      getNotificationIcon
+      getNotificationIcon,
+      
+      // Vercel环境检测
+      isVercelEnv,
+      showApiConfig,
+      apiConfigComponent
     }
   }
 })
@@ -503,5 +533,28 @@ body {
 
 .close-btn:hover {
   opacity: 1;
+}
+
+.api-config-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 12px;
+  background-color: #4a5568;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  margin-right: 10px;
+  transition: background-color 0.2s;
+}
+
+.api-config-btn:hover {
+  background-color: #2d3748;
+}
+
+.api-config-btn i {
+  font-size: 16px;
 }
 </style> 

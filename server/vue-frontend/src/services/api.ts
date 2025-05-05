@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { getWalletAddress, getSignatureInfo, refreshSignatureIfNeeded, connectAndSign, isWalletConnected } from './solana-wallet';
+import { config } from '../config/env';
 
 // 扩展Window接口以支持动态属性
 declare global {
@@ -8,9 +9,8 @@ declare global {
   }
 }
 
-// 根据环境决定是否使用代理
-const useProxy = process.env.NODE_ENV === 'development';
-const baseURL = useProxy ? '/api' : 'http://localhost:12000';
+// 使用配置文件中的API基础URL
+const baseURL = config.apiBaseUrl;
 
 // 创建axios实例
 const api = axios.create({
