@@ -6,12 +6,12 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}开始配置A2A服务...${NC}"
+echo -e "${GREEN}开始配置Nginx...${NC}"
 
 # 安装必要的软件
 echo -e "${YELLOW}安装必要软件...${NC}"
 sudo apt-get update
-sudo apt-get install -y nginx certbot python3-certbot-nginx
+sudo apt-get install -y nginx
 
 # 创建Nginx配置文件
 echo -e "${YELLOW}创建Nginx配置...${NC}"
@@ -50,7 +50,7 @@ server {
     add_header X-Frame-Options SAMEORIGIN;
     add_header X-XSS-Protection "1; mode=block";
     
-    # API反向代理配置
+    # API反向代理配置 - 使用固定端口12000
     location / {
         proxy_pass http://localhost:12000;
         proxy_http_version 1.1;
@@ -115,17 +115,22 @@ server {
     add_header X-Frame-Options SAMEORIGIN;
     add_header X-XSS-Protection "1; mode=block";
     
-    # 静态文件目录
-    root /var/www/a2a-frontend;
-    index index.html;
-    
-    # 前端路由处理
+    # 前端反向代理配置 - 使用固定端口3000
     location / {
-        try_files $uri $uri/ /index.html;
+        proxy_pass http://localhost:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
     }
     
     # 缓存静态资源
     location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+        proxy_pass http://localhost:3000;
         expires 30d;
         add_header Cache-Control "public, no-transform";
     }
@@ -136,10 +141,6 @@ EOF
 echo -e "${YELLOW}启用Nginx站点配置...${NC}"
 sudo ln -sf /etc/nginx/sites-available/api.agenticdao.net /etc/nginx/sites-enabled/
 sudo ln -sf /etc/nginx/sites-available/agenticdao.net /etc/nginx/sites-enabled/
-
-# 创建静态文件目录
-echo -e "${YELLOW}创建前端静态文件目录...${NC}"
-sudo mkdir -p /var/www/a2a-frontend
 
 # 检查Nginx配置
 echo -e "${YELLOW}检查Nginx配置...${NC}"
@@ -154,105 +155,7 @@ fi
 echo -e "${YELLOW}重启Nginx...${NC}"
 sudo systemctl restart nginx
 
-# 复制后端配置文件
-echo -e "${YELLOW}创建后端服务配置文件...${NC}"
-cat > ~/server_config.json << 'EOF'
-{
-    "server": {
-        "host": "0.0.0.0",
-        "port": 12000,
-        "debug": false,
-        "allow_cors": true
-    },
-    "cors": {
-        "allowed_origins": ["https://agenticdao.net"],
-        "allowed_methods": ["GET", "POST", "OPTIONS"],
-        "allowed_headers": [
-            "Content-Type", 
-            "Authorization", 
-            "X-Solana-PublicKey", 
-            "X-Solana-Signature", 
-            "X-Solana-Nonce"
-        ]
-    },
-    "api": {
-        "base_url": "https://api.agenticdao.net"
-    }
-}
-EOF
-
-# 复制配置文件到后端目录
-echo -e "${YELLOW}复制配置文件到后端目录...${NC}"
-cp ~/server_config.json ~/Documents/GitHub/a2aserver/server/config.json
-
-# 创建后端启动脚本
-echo -e "${YELLOW}创建后端启动脚本...${NC}"
-cat > ~/start_backend.sh << 'EOF'
-#!/bin/bash
-
-cd ~/Documents/GitHub/a2aserver/server
-python3 main.py --config config.json
-EOF
-
-chmod +x ~/start_backend.sh
-
-# 创建前端构建和部署脚本
-echo -e "${YELLOW}创建前端构建和部署脚本...${NC}"
-cat > ~/build_frontend.sh << 'EOF'
-#!/bin/bash
-
-# 切换到前端目录
-cd ~/Documents/GitHub/a2aserver/server/vue-frontend
-
-# 安装依赖
-npm install
-
-# 设置环境变量，确保API URL正确
-export VUE_APP_API_URL=https://api.agenticdao.net
-
-# 构建前端
-npm run build
-
-# 部署到Nginx目录
-sudo cp -r dist/* /var/www/a2a-frontend/
-sudo chown -R www-data:www-data /var/www/a2a-frontend/
-
-echo "前端构建和部署完成!"
-EOF
-
-chmod +x ~/build_frontend.sh
-
-# 创建服务自启动配置
-echo -e "${YELLOW}创建系统服务配置...${NC}"
-
-# 后端服务
-sudo cat > /etc/systemd/system/a2a-backend.service << 'EOF'
-[Unit]
-Description=A2A Backend Service
-After=network.target
-
-[Service]
-Type=simple
-User=ubuntu
-WorkingDirectory=/home/ubuntu/Documents/GitHub/a2aserver/server
-ExecStart=/usr/bin/python3 /home/ubuntu/Documents/GitHub/a2aserver/server/main.py --config config.json
-Restart=on-failure
-RestartSec=5s
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# 重载systemd配置
-sudo systemctl daemon-reload
-
-# 启用并启动服务
-echo -e "${YELLOW}启用并启动后端服务...${NC}"
-sudo systemctl enable a2a-backend.service
-sudo systemctl start a2a-backend.service
-
-echo -e "${GREEN}配置完成!${NC}"
-echo -e "${GREEN}后端服务运行在: https://api.agenticdao.net${NC}"
-echo -e "${GREEN}前端访问地址: https://agenticdao.net${NC}"
-echo -e "${YELLOW}请运行 ~/build_frontend.sh 来构建并部署前端${NC}"
-echo -e "${YELLOW}服务状态可以通过 'sudo systemctl status a2a-backend.service' 查看${NC}" 
+echo -e "${GREEN}Nginx配置完成!${NC}"
+echo -e "${GREEN}后端服务应运行在: http://localhost:12000 (Nginx反向代理到 https://api.agenticdao.net)${NC}"
+echo -e "${GREEN}前端服务应运行在: http://localhost:3000 (Nginx反向代理到 https://agenticdao.net)${NC}"
+echo -e "${YELLOW}请确保手动启动前端和后端服务，并正确设置它们的端口。${NC}" 
