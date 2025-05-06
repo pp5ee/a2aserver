@@ -52,8 +52,10 @@ server {
     
     # API反向代理配置 - 通过/beapi路径
     location /beapi/ {
-        # 直接将请求转发到后端API，不修改路径
-        proxy_pass http://localhost:12000/;
+        # 移除/beapi前缀，将请求转发到后端API
+        rewrite ^/beapi/(.*) /$1 break;
+        
+        proxy_pass http://localhost:12000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
@@ -63,14 +65,14 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_cache_bypass $http_upgrade;
         
-        # CORS设置 - 允许来自任何源的请求（方便本地开发），生产环境中可以限制
-        add_header 'Access-Control-Allow-Origin' '*' always;
+        # CORS设置
+        add_header 'Access-Control-Allow-Origin' 'https://agenticdao.net' always;
         add_header 'Access-Control-Allow-Methods' 'GET, POST, OPTIONS' always;
         add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,X-Solana-PublicKey,X-Solana-Signature,X-Solana-Nonce' always;
         add_header 'Access-Control-Expose-Headers' 'Content-Length,Content-Range' always;
         
         if ($request_method = 'OPTIONS') {
-            add_header 'Access-Control-Allow-Origin' '*' always;
+            add_header 'Access-Control-Allow-Origin' 'https://agenticdao.net' always;
             add_header 'Access-Control-Allow-Methods' 'GET, POST, OPTIONS' always;
             add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,X-Solana-PublicKey,X-Solana-Signature,X-Solana-Nonce' always;
             add_header 'Access-Control-Max-Age' 1728000;
@@ -128,5 +130,4 @@ sudo systemctl restart nginx
 echo -e "${GREEN}Nginx配置完成!${NC}"
 echo -e "${GREEN}后端API服务应运行在: http://localhost:12000 (通过 https://agenticdao.net/beapi/ 访问)${NC}"
 echo -e "${GREEN}前端服务应运行在: http://localhost:3001 (通过 https://agenticdao.net 访问)${NC}"
-echo -e "${YELLOW}前端开发时可以直接使用 http://localhost:12000 访问API，生产环境使用 https://agenticdao.net/beapi/${NC}"
 echo -e "${YELLOW}请确保手动启动前端和后端服务，并正确设置它们的端口。${NC}" 

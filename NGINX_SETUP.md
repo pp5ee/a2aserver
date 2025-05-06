@@ -8,24 +8,12 @@
 - 为前端和API设置HTTPS访问
 - 配置SSL证书
 - 将HTTPS请求反向代理到本地运行的服务
-- 支持开发环境与生产环境的不同API访问方式
 
 ## 端口配置
 
 - 前端服务: 本地端口 `3001`，通过 `https://agenticdao.net` 访问
-- 后端API: 本地端口 `12000`，公网通过 `https://agenticdao.net/beapi/` 访问
-
-## 本地开发与生产环境
-
-本配置支持两种API访问模式：
-
-1. **本地开发环境**: 
-   - 前端可以直接访问 `http://localhost:12000` 的API接口
-   - 无需修改API路径，保持与后端服务原有接口一致
-
-2. **生产环境**: 
-   - 前端通过 `https://agenticdao.net/beapi/` 访问API
-   - 需在前端配置中设置正确的基础URL
+- 后端API: 本地端口 `12000`，通过 `https://agenticdao.net/beapi/` 访问
+  - 在本地开发环境中，API直接通过 `http://localhost:12000` 访问
 
 ## 部署步骤
 
@@ -42,44 +30,44 @@
 
 3. 手动启动前端服务（端口3001）和后端服务（端口12000）
 
-## 前端服务配置
+## 前端服务
 
-### 本地开发
+您需要自行确保前端服务运行在端口3001上。例如，对于Vue.js项目，您可以：
 
-在本地开发时，前端直接访问本地后端：
-
-```javascript
-// 前端API基础URL配置 - 本地开发环境
-const apiBaseUrl = 'http://localhost:12000';
+```bash
+cd ~/Documents/GitHub/a2aserver/server/vue-frontend
+# 启动开发服务器
+npm run serve -- --port 3001
+# 或者构建并使用静态文件服务器
+npm run build
+npx serve -s dist -l 3001
 ```
 
-### 生产环境
+## 前端API配置
 
-部署到生产环境时，修改为：
+前端代码现在会根据运行环境自动选择正确的API基础URL：
 
-```javascript
-// 前端API基础URL配置 - 生产环境
-const apiBaseUrl = 'https://agenticdao.net/beapi';
-```
+1. **本地开发环境**：
+   - 当在 `localhost` 或 `127.0.0.1` 访问前端时
+   - API请求会直接发送到 `http://localhost:12000`
 
-您可以使用环境变量来区分不同环境：
+2. **生产环境**：
+   - 当在其他域名（如 `agenticdao.net`）访问前端时
+   - API请求会发送到当前域名加 `/beapi`，例如 `https://agenticdao.net/beapi`
 
-```javascript
-// Vue.js环境变量配置示例
-const apiBaseUrl = process.env.NODE_ENV === 'development' 
-  ? 'http://localhost:12000' 
-  : 'https://agenticdao.net/beapi';
-```
+前端代码中不需要做任何更改，配置会自动检测环境并使用合适的API URL。
 
 ## 后端服务
 
-您需要自行确保后端服务运行在端口12000上：
+您需要自行确保后端服务运行在端口12000上。例如：
 
 ```bash
 cd ~/Documents/GitHub/a2aserver/server
 # 启动后端服务
 python main.py
 ```
+
+注意：后端API需要正确处理请求路径。由于Nginx配置会移除`/beapi`前缀再转发请求，后端不需要添加额外的路径前缀处理。
 
 ## 验证配置
 
@@ -98,18 +86,22 @@ python main.py
 
 3. 测试API连接：
    ```bash
-   # 测试本地API
-   curl http://localhost:12000/health
-   
-   # 测试公网API
+   # 生产环境
    curl -k https://agenticdao.net/beapi/health
+   
+   # 本地环境
+   curl http://localhost:12000/health
    ```
 
-4. 在浏览器中访问前端：`https://agenticdao.net`
+4. 在浏览器中访问前端：
+   - 生产环境：`https://agenticdao.net`
+   - 本地环境：`http://localhost:3001`
 
 ## CORS配置
 
-Nginx配置中已设置CORS允许任何来源的请求（`Access-Control-Allow-Origin: *`），这样本地开发时也能直接访问生产API。在安全要求较高的环境中，您可以将其限制为特定域名。
+Nginx配置中已包含API服务的CORS设置，允许来自同一域名的请求。由于前端和API现在使用同一域名，理论上不再需要CORS设置，但为了兼容性和安全，仍保留了相关配置。
+
+在本地开发模式下，前端访问API时会产生跨域请求，需要确保后端服务允许来自`localhost:3001`的跨域请求。
 
 ## 故障排除
 
@@ -125,15 +117,24 @@ sudo nginx -t
 sudo tail -f /var/log/nginx/error.log
 ```
 
-### API路径问题
+### 无法连接到服务
 
-本地开发时：
-- API请求应直接发送到 `http://localhost:12000/your-endpoint`
+1. 确认前端和后端服务正在运行：
+   ```bash
+   netstat -tulpn | grep 3001
+   netstat -tulpn | grep 12000
+   ```
 
-生产环境：
-- API请求应发送到 `https://agenticdao.net/beapi/your-endpoint`
+2. 检查前端API配置：
+   - 在浏览器控制台中，查看是否显示了正确的API基础URL
+   - 在本地环境中，应显示`http://localhost:12000`
+   - 在生产环境中，应显示`https://agenticdao.net/beapi`
 
-如果遇到404错误，请检查：
-1. 前端是否使用了正确的API基础URL
-2. Nginx日志中是否有请求转发记录
-3. 后端服务是否正确响应请求 
+3. 本地环境CORS问题：
+   - 如果在本地开发时遇到CORS错误，确保后端服务允许来自`localhost:3001`的跨域请求
+   - 可以在后端添加以下CORS头：
+     ```
+     Access-Control-Allow-Origin: http://localhost:3001
+     Access-Control-Allow-Methods: GET, POST, OPTIONS
+     Access-Control-Allow-Headers: Content-Type, Authorization, X-Solana-PublicKey, X-Solana-Signature, X-Solana-Nonce
+     ``` 

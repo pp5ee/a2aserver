@@ -11,6 +11,7 @@ declare global {
 
 // 使用配置文件中的API基础URL
 const baseURL = config.apiBaseUrl;
+console.log('API服务使用的基础URL:', baseURL);
 
 // 创建axios实例
 const api = axios.create({
@@ -108,7 +109,7 @@ api.interceptors.request.use(
       console.log('非API请求，无需钱包签名:', config.url);
     }
     
-    console.log('正在发送请求:', config.url, config.method);
+    console.log('正在发送请求:', config.url, config.method, `到 ${baseURL}`);
     return config;
   },
   error => {
