@@ -88,16 +88,33 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
+        # 设置主机头为原始主机头或localhost
+        proxy_set_header Host 'localhost';
+        # 传递原始主机头
+        proxy_set_header X-Forwarded-Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_cache_bypass $http_upgrade;
+        
+        # 启用WebSocket支持
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        
+        # 增大缓冲区大小，避免504错误
+        proxy_buffers 8 32k;
+        proxy_buffer_size 64k;
+        
+        # 禁用缓存以解决Vue开发服务器问题
+        proxy_no_cache 1;
+        proxy_cache_bypass 1;
     }
     
     # 缓存静态资源
     location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
         proxy_pass http://localhost:3001;
+        # 设置主机头为原始主机头或localhost
+        proxy_set_header Host 'localhost'; 
         expires 30d;
         add_header Cache-Control "public, no-transform";
     }
@@ -130,4 +147,7 @@ sudo systemctl restart nginx
 echo -e "${GREEN}Nginx配置完成!${NC}"
 echo -e "${GREEN}后端API服务应运行在: http://localhost:12000 (通过 https://agenticdao.net/beapi/ 访问)${NC}"
 echo -e "${GREEN}前端服务应运行在: http://localhost:3001 (通过 https://agenticdao.net 访问)${NC}"
-echo -e "${YELLOW}请确保手动启动前端和后端服务，并正确设置它们的端口。${NC}" 
+echo -e "${YELLOW}请确保手动启动前端和后端服务，并正确设置它们的端口。${NC}"
+echo -e "${YELLOW}对于前端服务，请使用以下命令以开发模式启动:${NC}"
+echo -e "${GREEN}cd ~/Documents/GitHub/a2aserver/server/vue-frontend${NC}"
+echo -e "${GREEN}npm run serve -- --port 3001 --host 0.0.0.0 --public localhost --disable-host-check${NC}" 

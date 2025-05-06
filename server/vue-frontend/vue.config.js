@@ -8,7 +8,16 @@ module.exports = defineConfig({
   lintOnSave: false,
   // 添加开发服务器代理配置，解决CORS问题
   devServer: {
-    port: 8081,
+    port: 3001,
+    // 允许任何主机头访问，解决"Invalid Host header"问题
+    allowedHosts: 'all',
+    // 设置为true，进一步解决主机头问题
+    disableHostCheck: true,
+    historyApiFallback: true,
+    // 设置信任代理来自的标头
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+    },
     proxy: {
       '/api': {
         target: 'http://localhost:12000',
@@ -29,10 +38,15 @@ module.exports = defineConfig({
     }
   },
   // 使用相对路径，这在Vercel部署中很重要
-  publicPath: isVercel ? '/' : '/',
+  publicPath: '/',
   // 构建配置
   configureWebpack: {
     // 添加环境变量注入
-    plugins: []
+    plugins: [],
+    // 设置webpack开发服务器选项
+    devServer: {
+      disableHostCheck: true,
+      public: 'agenticdao.net'
+    }
   }
 }) 
