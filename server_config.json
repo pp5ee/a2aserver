@@ -1,0 +1,22 @@
+{
+    "server": {
+        "host": "0.0.0.0",
+        "port": 12000,
+        "debug": false,
+        "allow_cors": true
+    },
+    "cors": {
+        "allowed_origins": ["https://agenticdao.net"],
+        "allowed_methods": ["GET", "POST", "OPTIONS"],
+        "allowed_headers": [
+            "Content-Type", 
+            "Authorization", 
+            "X-Solana-PublicKey", 
+            "X-Solana-Signature", 
+            "X-Solana-Nonce"
+        ]
+    },
+    "api": {
+        "base_url": "https://api.agenticdao.net"
+    }
+} 
