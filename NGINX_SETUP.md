@@ -8,11 +8,24 @@
 - 为前端和API设置HTTPS访问
 - 配置SSL证书
 - 将HTTPS请求反向代理到本地运行的服务
+- 支持开发环境与生产环境的不同API访问方式
 
 ## 端口配置
 
-- 前端服务: 本地端口 `3000`，通过 `https://agenticdao.net` 访问
-- 后端API: 本地端口 `12000`，通过 `https://api.agenticdao.net` 访问
+- 前端服务: 本地端口 `3001`，通过 `https://agenticdao.net` 访问
+- 后端API: 本地端口 `12000`，公网通过 `https://agenticdao.net/beapi/` 访问
+
+## 本地开发与生产环境
+
+本配置支持两种API访问模式：
+
+1. **本地开发环境**: 
+   - 前端可以直接访问 `http://localhost:12000` 的API接口
+   - 无需修改API路径，保持与后端服务原有接口一致
+
+2. **生产环境**: 
+   - 前端通过 `https://agenticdao.net/beapi/` 访问API
+   - 需在前端配置中设置正确的基础URL
 
 ## 部署步骤
 
@@ -27,34 +40,46 @@
    ./setup_nginx.sh
    ```
 
-3. 手动启动前端服务（端口3000）和后端服务（端口12000）
+3. 手动启动前端服务（端口3001）和后端服务（端口12000）
 
-## 前端服务
+## 前端服务配置
 
-您需要自行确保前端服务运行在端口3000上。例如，对于Vue.js项目，您可以：
+### 本地开发
 
-```bash
-cd ~/Documents/GitHub/a2aserver/server/vue-frontend
-# 设置环境变量
-export VUE_APP_API_URL=https://api.agenticdao.net
-# 启动开发服务器
-npm run serve -- --port 3000
-# 或者构建并使用静态文件服务器
-npm run build
-npx serve -s dist -l 3000
+在本地开发时，前端直接访问本地后端：
+
+```javascript
+// 前端API基础URL配置 - 本地开发环境
+const apiBaseUrl = 'http://localhost:12000';
+```
+
+### 生产环境
+
+部署到生产环境时，修改为：
+
+```javascript
+// 前端API基础URL配置 - 生产环境
+const apiBaseUrl = 'https://agenticdao.net/beapi';
+```
+
+您可以使用环境变量来区分不同环境：
+
+```javascript
+// Vue.js环境变量配置示例
+const apiBaseUrl = process.env.NODE_ENV === 'development' 
+  ? 'http://localhost:12000' 
+  : 'https://agenticdao.net/beapi';
 ```
 
 ## 后端服务
 
-您需要自行确保后端服务运行在端口12000上。例如：
+您需要自行确保后端服务运行在端口12000上：
 
 ```bash
 cd ~/Documents/GitHub/a2aserver/server
 # 启动后端服务
 python main.py
 ```
-
-确保您的后端配置正确设置监听端口12000。
 
 ## 验证配置
 
@@ -73,14 +98,18 @@ python main.py
 
 3. 测试API连接：
    ```bash
-   curl -k https://api.agenticdao.net/health
+   # 测试本地API
+   curl http://localhost:12000/health
+   
+   # 测试公网API
+   curl -k https://agenticdao.net/beapi/health
    ```
 
 4. 在浏览器中访问前端：`https://agenticdao.net`
 
 ## CORS配置
 
-Nginx配置中已包含API服务的CORS设置，允许来自 `https://agenticdao.net` 的跨域请求。如果需要允许其他源，请修改Nginx配置中的 `Access-Control-Allow-Origin` 头。
+Nginx配置中已设置CORS允许任何来源的请求（`Access-Control-Allow-Origin: *`），这样本地开发时也能直接访问生产API。在安全要求较高的环境中，您可以将其限制为特定域名。
 
 ## 故障排除
 
@@ -96,17 +125,15 @@ sudo nginx -t
 sudo tail -f /var/log/nginx/error.log
 ```
 
-### 无法连接到服务
+### API路径问题
 
-1. 确认前端和后端服务正在运行：
-   ```bash
-   netstat -tulpn | grep 3000
-   netstat -tulpn | grep 12000
-   ```
+本地开发时：
+- API请求应直接发送到 `http://localhost:12000/your-endpoint`
 
-2. 检查防火墙设置：
-   ```bash
-   sudo ufw status
-   ```
+生产环境：
+- API请求应发送到 `https://agenticdao.net/beapi/your-endpoint`
 
-3. 验证DNS设置是否正确指向服务器IP。 
+如果遇到404错误，请检查：
+1. 前端是否使用了正确的API基础URL
+2. Nginx日志中是否有请求转发记录
+3. 后端服务是否正确响应请求 
