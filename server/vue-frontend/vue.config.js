@@ -11,12 +11,20 @@ module.exports = defineConfig({
     port: 3001,
     // 允许任何主机头访问，解决"Invalid Host header"问题
     allowedHosts: 'all',
-    // 设置为true，进一步解决主机头问题
-    disableHostCheck: true,
+    // 适配新版本webpack-dev-server
+    // 注意：disableHostCheck已被废弃，使用allowedHosts代替
     historyApiFallback: true,
     // 设置信任代理来自的标头
     headers: {
       'Access-Control-Allow-Origin': '*',
+    },
+    // 客户端配置
+    client: {
+      webSocketURL: 'auto://0.0.0.0:0/ws',
+      overlay: {
+        errors: true,
+        warnings: false,
+      },
     },
     proxy: {
       '/api': {
@@ -43,10 +51,5 @@ module.exports = defineConfig({
   configureWebpack: {
     // 添加环境变量注入
     plugins: [],
-    // 设置webpack开发服务器选项
-    devServer: {
-      disableHostCheck: true,
-      public: 'agenticdao.net'
-    }
   }
 }) 
