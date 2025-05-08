@@ -162,27 +162,19 @@ try:
     # 加载pyyaml库
     import yaml
     setup_swagger_docs(app)
-    logger.info("API文档已配置，可访问 /api/docs 或 /api/redoc")
+    logger.info("API documentation configured, can be accessed at /api/docs or /api/redoc")
 except ImportError:
-    logger.warning("未安装pyyaml库，无法加载API文档。安装: pip install pyyaml")
+    logger.warning("pyyaml library not installed, cannot load API documentation. install: pip install pyyaml")
 except Exception as e:
     logger.warning(f"API文档配置失败: {str(e)}")
 
-# 添加CORS中间件以支持跨域请求
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # 允许所有来源，生产环境应该限制
-    allow_credentials=False,
-    allow_methods=["*"],  # 允许所有方法
-    allow_headers=["*"],  # 允许所有请求头
-    expose_headers=["*"]  # 允许暴露所有响应头
-)
 
-# 添加中间件验证签名并记录请求头信息
+
+# add middleware to verify signature and record request header information
 @app.middleware("http")
 async def verify_signature_middleware(request: Request, call_next):
-    """验证请求头中的签名信息并确保用户存在于数据库中"""
-    # 定义需要验证签名的API路径
+    """verify signature in header and ensure user exists in database"""
+    # define api paths that need signature verification
     api_paths = [
         "/conversation/create",
         "/message/send",
@@ -199,34 +191,34 @@ async def verify_signature_middleware(request: Request, call_next):
     needs_verification = any(api_path in path for api_path in api_paths)
     
     if needs_verification:
-        # 获取请求头中的验证信息
+        # get verification information from header
         public_key = request.headers.get("X-Solana-PublicKey")
         nonce = request.headers.get("X-Solana-Nonce")
         signature = request.headers.get("X-Solana-Signature")
         
         # 验证签名
         if not public_key:
-            logger.warning(f"请求缺少钱包地址: {path}")
+            logger.warning(f"public key in header is required: {path}")
             return Response(
-                content=json.dumps({"error": "请求未包含钱包地址，请连接钱包"}),
+                content=json.dumps({"error": "public key in header is required"}),
                 status_code=401,
                 media_type="application/json"
             )
         
-        # 如果没有nonce或signature，返回错误
+        # if nonce or signature is not provided, return error
         if not nonce or not signature:
-            logger.warning(f"请求缺少签名信息: path={path}, public_key={public_key[:10]}...")
+            logger.warning(f"signature in header is required: path={path}, public_key={public_key[:10]}...")
             return Response(
-                content=json.dumps({"error": "请求需要钱包签名，请重新签名"}),
+                content=json.dumps({"error": "signature in header is required"}),
                 status_code=401,
                 media_type="application/json"
             )
         
         # 检查验证器是否可用
         if not SOLANA_VERIFIER_AVAILABLE:
-            logger.error(f"签名验证失败: Solana验证器不可用")
+            logger.error(f"server signature verification component is not available, please contact the administrator")
             return Response(
-                content=json.dumps({"error": "服务器签名验证组件不可用，请联系管理员"}),
+                content=json.dumps({"error": "server signature verification component is not available, please contact the administrator"}),
                 status_code=500,
                 media_type="application/json"
             )
@@ -239,47 +231,47 @@ async def verify_signature_middleware(request: Request, call_next):
                 current_time = int(time.time() * 1000)
                 
                 if current_time > nonce_timestamp:
-                    # 签名已过期
+                    # signature expired
                     return Response(
-                        content=json.dumps({"error": "签名已过期，请重新签名"}),
+                        content=json.dumps({"error": "signature expired, please sign again"}),
                         status_code=401,
                         media_type="application/json"
                     )
             except ValueError:
                 pass
                 
-            # 签名无效
+            # invalid signature
             return Response(
-                content=json.dumps({"error": "签名无效，请重新签名"}),
+                content=json.dumps({"error": "invalid signature, please sign again"}),
                 status_code=401,
                 media_type="application/json"
             )
         
-        # 记录验证成功
+        # record successful verification
         if path in ["/message/send", "/agent/register", "/conversation/create"]:
-            logger.info(f"签名验证成功: path={path}, public_key={public_key[:10]}...")
+            logger.info(f"signature verification successful: path={path}, public_key={public_key[:10]}...")
         
-        # 确保用户在数据库中存在
+        # ensure user exists in database
         try:
             from service.server.user_session_manager import UserSessionManager
             UserSessionManager.get_instance()._ensure_user_exists(public_key)
         except Exception as e:
-            logger.error(f"将用户添加到数据库时出错: {str(e)}")
+            logger.error(f"error adding user to database: {str(e)}")
     
     response = await call_next(request)
     return response
 
-# 添加全局错误处理中间件
+# add global error handling middleware
 @app.middleware("http")
 async def catch_exceptions(request: Request, call_next):
-    """全局异常处理"""
+    """global exception handling"""
     try:
         return await call_next(request)
     except Exception as e:
-        logger.error(f"处理请求时发生错误: {str(e)}")
-        # 返回JSON格式的错误响应
+        logger.error(f"error occurred while processing the request: {str(e)}")
+        # return JSON format error response
         return Response(
-            content=json.dumps({"error": str(e)}),
+            content=json.dumps({"error": 'internal server error'}),
             status_code=500,
             media_type="application/json"
         )
@@ -287,13 +279,13 @@ async def catch_exceptions(request: Request, call_next):
 # 定义一个简单的健康检查端点
 @app.get("/health")
 async def health_check():
-    """健康检查端点"""
+    """health check endpoint"""
     return {"status": "ok", "multi_user": True, "memory_mode": True}
 
 # 添加JSONP支持的中间件
 @app.middleware("http")
 async def jsonp_middleware(request: Request, call_next):
-    """处理JSONP请求"""
+    """jsonp middleware"""
     callback = request.query_params.get("callback")
     response = await call_next(request)
     
@@ -314,7 +306,7 @@ async def jsonp_middleware(request: Request, call_next):
 @app.get("/api/metadata-proxy/{path:path}")
 async def metadata_proxy(path: str, request: Request):
     """
-    代理元数据请求，解决CORS问题
+    proxy metadata request, solve CORS problem
     """
     import httpx
     
@@ -328,7 +320,7 @@ async def metadata_proxy(path: str, request: Request):
     target_url = f"http://8.214.38.69:10003/{full_path}"
     
     try:
-        logger.info(f"代理请求: {target_url}")
+        logger.info(f"proxy request: {target_url}")
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(target_url)
             
@@ -342,22 +334,22 @@ async def metadata_proxy(path: str, request: Request):
                 headers={"content-type": content_type}
             )
     except Exception as e:
-        logger.error(f"代理请求失败: {e}")
+        logger.error(f"proxy request failed: {e}")
         return JSONResponse(
             status_code=500,
-            content={"error": f"代理请求失败: {str(e)}"}
+            content={"error": f"proxy request failed: {str(e)}"}
         )
 
 @app.get("/api/agent/status")
 async def get_agent_status(request: Request, wallet_address: Optional[str] = None):
     """
-    获取代理状态信息
+    get agent status information
     
     Args:
-        wallet_address: 可选，指定钱包地址。如果不提供，则获取所有代理状态
+        wallet_address: optional, specify the wallet address. if not provided, get all agent status
         
     Returns:
-        代理状态信息列表
+        agent status information list
     """
     # 获取代理状态
     from service.server.user_session_manager import UserSessionManager
@@ -375,6 +367,15 @@ app.mount(
         me.create_wsgi_app(debug_mode=os.environ.get("DEBUG_MODE", "") == "true")
     ),
 )
+# add CORS middleware to support cross-domain requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # allow all sources, should be limited in production environment
+    allow_credentials=False,
+    allow_methods=["*"],  # allow all methods
+    allow_headers=["*"],  # allow all request headers
+    expose_headers=["*"]  # allow expose all response headers
+)
 
 if __name__ == "__main__":    
 
@@ -386,7 +387,7 @@ if __name__ == "__main__":
     # Set the client to talk to the server
     host_agent_service.server_url = f"http://{host}:{port}"
 
-    logger.info(f"启动A2A服务器在 {host}:{port}，已启用多用户支持")
+    logger.info(f"server started at {host}:{port}, multi-user support enabled")
     
     uvicorn.run(
         "main:app",
