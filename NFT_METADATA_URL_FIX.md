@@ -127,9 +127,7 @@ def _ensure_db_connection(self):
             self._initialize_database()
     except Exception as e:
         logger.error(f"确保数据库连接时出错: {e}")
-        # 如果重连失败，切换到内存模式
-        self._memory_mode = True
-        logger.warning("切换到内存模式运行，数据将不会持久化")
+        
 ```
 
 ### 5. 前端改进

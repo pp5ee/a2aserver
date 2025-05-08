@@ -213,9 +213,7 @@ class UserSessionManager:
             logger.info("数据库表创建/检查完成")
         except Exception as err:
             logger.error(f"创建表失败: {err}")
-            # 切换到内存模式
-            self._memory_mode = True
-            logger.warning("切换到内存模式运行，数据将不会持久化")
+            
     
     def get_host_manager(self, wallet_address: str) -> ADKHostManager:
         """获取指定用户的Host Manager实例，如果不存在则创建新实例"""
@@ -297,9 +295,7 @@ class UserSessionManager:
                 self._initialize_database()
         except Exception as e:
             logger.error(f"确保数据库连接时出错: {e}")
-            # 如果重连失败，切换到内存模式
-            self._memory_mode = True
-            logger.warning("切换到内存模式运行，数据将不会持久化")
+            
     
     def _ensure_user_exists(self, wallet_address: str):
         """确保用户在数据库中存在，如果不存在则创建新用户"""
@@ -472,10 +468,7 @@ class UserSessionManager:
             cursor.close()
         except Exception as err:
             logger.error(f"清理会话时出错: {err}")
-            # 切换到内存模式
-            if not self._memory_mode:
-                self._memory_mode = True
-                logger.warning("切换到内存模式运行，数据将不会持久化") 
+            #
     
     def refresh_user_agents(self, wallet_address: str):
         """在每次请求时重新加载用户的agent列表"""
@@ -1339,9 +1332,7 @@ class UserSessionManager:
             try:
                 self._ensure_db_connection()
             except Exception:
-                # 如果重连失败，切换到内存模式
-                self._memory_mode = True
-                logger.warning("切换到内存模式运行，数据将不会持久化")
+                logger.error("更新用户订阅时出错，无法重新连接数据库")
     
     async def _get_user_valid_subscriptions(self, wallet_address: str):
         """从Solana获取用户有效的NFT订阅
@@ -1504,9 +1495,7 @@ class UserSessionManager:
                 self._initialize_database()
             except Exception as db_err:
                 logger.error(f"重新连接数据库失败: {db_err}")
-                # 切换到内存模式
-                self._memory_mode = True
-                logger.warning("切换到内存模式运行，数据将不会持久化")
+                
 
     def _remove_expired_agents(self, wallet_address: str):
         """移除过期的代理"""
@@ -1587,9 +1576,7 @@ class UserSessionManager:
                     pass
         except Exception as err:
             logger.error(f"清理过期代理时出错: {err}")
-            # 如果重连失败，切换到内存模式
-            self._memory_mode = True
-            logger.warning("切换到内存模式运行，数据将不会持久化")
+            
 
     def get_agent_status(self, wallet_address: str = None) -> List[Dict[str, Any]]:
         """
@@ -2025,9 +2012,7 @@ class ExpiredAgentCleaner:
                     pass
         except Exception as err:
             logger.error(f"清理过期代理时出错: {err}")
-            # 如果重连失败，切换到内存模式
-            self.user_session_manager._memory_mode = True
-            logger.warning("切换到内存模式运行，数据将不会持久化")
+
 
 class AgentStatusChecker:
     """代理状态检查的定时任务管理器"""
