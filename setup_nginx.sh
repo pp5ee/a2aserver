@@ -63,6 +63,11 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # 传递所有认证头信息，特别是Solana相关头
+        proxy_set_header X-Solana-PublicKey $http_x_solana_publickey;
+        proxy_set_header X-Solana-Signature $http_x_solana_signature;
+        proxy_set_header X-Solana-Nonce $http_x_solana_nonce;
+        proxy_set_header Authorization $http_authorization;
         proxy_cache_bypass $http_upgrade;
         
         # 设置CORS - 动态允许来源，提高灵活性

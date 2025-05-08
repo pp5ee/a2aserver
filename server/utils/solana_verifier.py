@@ -545,68 +545,88 @@ async def get_nft_metadata_url_direct(rpc_url: str, agent_nft_pda: str) -> str:
         # 解码Base64数据
         account_data = base64.b64decode(data[0])
         
-        # 解析账户数据
-        # 账户判别器 (8字节) + owner (32字节) + mint (32字节) + 字符串长度 (4字节) + 字符串内容
-        fixed_fields_size = 8 + 32 + 32
+        # 记录账户数据总长度，用于调试
+        logger.info(f"账户数据总长度: {len(account_data)}")
         
-        # 获取字符串长度
-        if len(account_data) < fixed_fields_size + 4:
-            logger.warning(f"账户数据长度不足: {len(account_data)}")
-            return "http://default-agent-url.com"
+        # 使用特征提取的方式获取元数据URL
+        # 将账户数据转换为文本并查找URL特征
+        try:
+            # 解码整个账户数据，忽略错误
+            data_str = account_data.decode('utf-8', errors='ignore')
             
-        # 记录原始字节数据帮助调试
-        logger.info(f"元数据URL长度字段(4字节): {account_data[fixed_fields_size:fixed_fields_size+4].hex()}")
-        
-        # 尝试解析字符串长度 - Solana/Rust使用小端序
-        url_len = int.from_bytes(account_data[fixed_fields_size:fixed_fields_size+4], byteorder='little')
-        logger.info(f"解析出的URL长度: {url_len}")
-        
-        # 检查URL长度是否合理
-        if url_len > 1000 or fixed_fields_size + 4 + url_len > len(account_data):
-            # 尝试直接从数据中提取URL
-            try:
-                # 查找URL特征，如"http"
-                data_str = account_data[fixed_fields_size:].decode('utf-8', errors='ignore')
-                http_index = data_str.find('http')
-                if http_index >= 0:
-                    # 提取URL直到第一个不可见字符
-                    url_end = http_index
+            # 查找常见的URL前缀
+            for prefix in ['http://', 'https://', 'www.']:
+                index = data_str.find(prefix)
+                if index >= 0:
+                    # 找到URL前缀，提取URL直到遇到不可打印字符
+                    url_start = index
+                    url_end = url_start
+                    
+                    # 继续读取直到遇到不可见字符或空格
                     while url_end < len(data_str) and data_str[url_end] >= ' ' and data_str[url_end] <= '~':
                         url_end += 1
-                    raw_agent_url = data_str[http_index:url_end]
-                    logger.info(f"通过特征提取URL: {raw_agent_url}")
-                    return raw_agent_url
-            except Exception as extract_error:
-                logger.error(f"尝试提取URL失败: {extract_error}")
+                    
+                    raw_agent_url = data_str[url_start:url_end]
+                    logger.info(f"通过特征提取到的元数据URL: {raw_agent_url}")
+                    
+                    # URL长度不应该太短
+                    if len(raw_agent_url) < 10:
+                        logger.warning(f"提取的URL长度过短，可能不正确: {raw_agent_url}")
+                        continue
+                    
+                    # 验证是否是合法URL
+                    try:
+                        from urllib.parse import urlparse
+                        parsed_url = urlparse(raw_agent_url)
+                        if parsed_url.scheme and parsed_url.netloc:
+                            return raw_agent_url
+                    except Exception as url_error:
+                        logger.warning(f"URL验证失败: {url_error}")
+                        continue
             
-            logger.warning(f"URL长度异常: {url_len}, 账户数据长度: {len(account_data)}")
-            return "http://default-agent-url.com"
+            logger.warning("在账户数据中未能找到有效的URL前缀")
+        except Exception as decode_error:
+            logger.error(f"解码账户数据失败: {decode_error}")
         
-        # 获取元数据URL
-        url_data = account_data[fixed_fields_size+4:fixed_fields_size+4+url_len]
+        # 如果特征提取失败，尝试使用Anchor账户结构启发式解析
         try:
-            raw_agent_url = url_data.decode('utf-8')
-            logger.info(f"从链上获取到原始元数据URL: {raw_agent_url}")
-            return raw_agent_url
-        except UnicodeDecodeError:
-            # 如果解码失败，尝试查找http字符串
-            logger.warning(f"URL解码失败，尝试查找http字符串")
-            try:
-                full_data = account_data[fixed_fields_size:].decode('utf-8', errors='ignore')
-                http_index = full_data.find('http')
-                if http_index >= 0:
-                    # 提取URL直到第一个不可见字符
-                    url_end = http_index
-                    while url_end < len(full_data) and full_data[url_end] >= ' ' and full_data[url_end] <= '~':
-                        url_end += 1
-                    raw_agent_url = full_data[http_index:url_end]
-                    logger.info(f"通过特征提取URL: {raw_agent_url}")
-                    return raw_agent_url
-            except Exception as e:
-                logger.error(f"尝试提取URL失败: {e}")
+            # AgentNft预期结构: discriminator(8) + owner(32) + mint(32) + metadataUrl(string)
+            # string格式: length(4 bytes) + 内容
             
-            # 如果所有尝试都失败，返回默认URL
-            return "http://default-agent-url.com"
+            # 检查账户判别器
+            discriminator = account_data[0:8].hex()
+            logger.info(f"账户判别器: {discriminator}")
+            
+            # 从第72字节开始寻找字符串长度
+            if len(account_data) >= 76:  # 至少有8+32+32+4=76字节
+                str_len_bytes = account_data[72:76]
+                str_len = int.from_bytes(str_len_bytes, byteorder='little')
+                
+                logger.info(f"提取的URL长度: {str_len}")
+                
+                # 验证长度是否合理 (比如小于500且不超出数据长度)
+                if 0 < str_len < 500 and 76 + str_len <= len(account_data):
+                    # 提取字符串内容
+                    str_data = account_data[76:76+str_len]
+                    try:
+                        url = str_data.decode('utf-8')
+                        logger.info(f"通过账户结构解析到的URL: {url}")
+                        
+                        # 确保URL以http://或https://开头
+                        if url.startswith('http://') or url.startswith('https://'):
+                            return url
+                        
+                        # 添加前缀
+                        logger.info(f"为URL添加http://前缀: {url}")
+                        return f"http://{url}"
+                    except Exception as str_error:
+                        logger.error(f"解码URL字符串失败: {str_error}")
+        except Exception as struct_error:
+            logger.error(f"解析账户结构失败: {struct_error}")
+        
+        # 所有方法都失败，返回默认URL
+        logger.warning("无法从账户数据中提取有效的元数据URL")
+        return "http://default-agent-url.com"
         
     except Exception as e:
         logger.error(f"获取NFT元数据URL时出错: {e}")
