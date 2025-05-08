@@ -3,6 +3,7 @@ import HomeView from '@/views/HomeView.vue'
 import ConversationView from '@/views/ConversationView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 import AgentsView from '@/views/AgentsView.vue'
+import SolanaProgramView from '@/views/SolanaProgramView.vue'
 
 const routes: Array<RouteRecordRaw> = [
   {
@@ -24,6 +25,11 @@ const routes: Array<RouteRecordRaw> = [
     path: '/agents',
     name: 'agents',
     component: AgentsView
+  },
+  {
+    path: '/solanaprogram',
+    name: 'solanaprogram',
+    component: SolanaProgramView
   }
 ]
 

@@ -3,8 +3,13 @@
     <div class="content-container">
       <div class="header">
         <h1>对话列表</h1>
-        <div class="icon">
-          <i class="material-icons">message</i>
+        <div class="header-actions">
+          <button class="refresh-btn" @click="refreshConversations" title="刷新列表">
+            <i class="material-icons">refresh</i>
+          </button>
+          <div class="icon">
+            <i class="material-icons">message</i>
+          </div>
         </div>
       </div>
       
@@ -121,7 +126,7 @@ export default defineComponent({
         const response = await apiService.deleteConversation(deleteDialog.conversationId);
         
         if (response.data && response.data.status === 'success') {
-          // 更新会话列表
+          // 手动更新会话列表
           store.dispatch('fetchConversations');
           showNotification(response.data.message || '会话删除成功');
         } else {
@@ -159,16 +164,15 @@ export default defineComponent({
       // 加载对话列表
       store.dispatch('fetchConversations');
       
-      // 启动轮询
-      const pollingInterval = setInterval(() => {
-        store.dispatch('pollUpdates');
-      }, store.state.pollingInterval * 1000);
-      
-      // 组件卸载时清除轮询
-      return () => {
-        clearInterval(pollingInterval);
-      };
+      // 不再需要轮询conversation/list接口，移除定时轮询
+      // 只在需要时加载会话列表
     });
+    
+    // 刷新对话列表的方法，只在用户显式要求刷新时调用
+    const refreshConversations = () => {
+      store.dispatch('fetchConversations');
+      showNotification('会话列表已刷新');
+    };
     
     // 获取对话列表
     const conversations = computed(() => {
@@ -215,7 +219,8 @@ export default defineComponent({
       deleteDialog,
       confirmDelete,
       deleteConversation,
-      notification
+      notification,
+      refreshConversations
     };
   }
 });
@@ -248,6 +253,20 @@ export default defineComponent({
 .header h1 {
   margin: 0;
   font-size: 24px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.refresh-btn {
+  background: none;
+  border: none;
+  color: #333;
+  cursor: pointer;
+  padding: 0;
 }
 
 .header .icon {

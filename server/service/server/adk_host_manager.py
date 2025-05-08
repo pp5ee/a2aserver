@@ -559,6 +559,22 @@ class ADKHostManager(ApplicationManager):
     return rval
 
   def register_agent(self, url):
+    # 处理URL格式
+    # 处理以@开头的URL
+    if url.startswith('@http://') or url.startswith('@https://'):
+      print(f"检测到以@开头的URL，移除前缀@: {url}")
+      url = url[1:]  # 去掉@符号
+    
+    # 去除.well-known/agent.json后缀，我们将在获取时添加
+    if "/.well-known/agent.json" in url:
+      url = url.split("/.well-known/agent.json")[0]
+      print(f"移除.well-known/agent.json后缀，使用基本URL: {url}")
+    
+    # 检查URL是否以http://或https://开头
+    if not (url.startswith('http://') or url.startswith('https://')):
+      url = 'http://' + url
+      print(f"添加http://前缀: {url}")
+    
     # 检查代理是否已经注册
     for agent in self._agents:
       if agent.url == url:
@@ -566,14 +582,20 @@ class ADKHostManager(ApplicationManager):
         return agent
     
     # 注册新代理
-    agent_data = get_agent_card(url)
-    if not agent_data.url:
-      agent_data.url = url
-    self._agents.append(agent_data)
-    self._host_agent.register_agent_card(agent_data)
-    # Now update the host agent definition
-    self._initialize_host()
-    return agent_data
+    try:
+      agent_data = get_agent_card(url)
+      if not agent_data.url:
+        agent_data.url = url
+      self._agents.append(agent_data)
+      self._host_agent.register_agent_card(agent_data)
+      # 更新host agent定义
+      self._initialize_host()
+      print(f"成功注册代理: {url}")
+      return agent_data
+    except Exception as e:
+      print(f"注册代理 {url} 失败: {e}")
+      # 返回错误信息而不是抛出异常，以便调用者可以处理
+      return None
 
   @property
   def agents(self) -> list[AgentCard]:

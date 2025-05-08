@@ -62,9 +62,13 @@ def initialize_database(host="localhost", port=3306, user="root", password="oran
             id INT AUTO_INCREMENT PRIMARY KEY,
             wallet_address VARCHAR(255),
             agent_url VARCHAR(255),
+            nft_mint_id VARCHAR(255),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expire_at TIMESTAMP NULL,
+            is_online VARCHAR(10) DEFAULT 'unknown',
+            agent_card LONGTEXT NULL,
             FOREIGN KEY (wallet_address) REFERENCES users(wallet_address) ON DELETE CASCADE,
-            UNIQUE(wallet_address, agent_url)
+            UNIQUE(wallet_address, nft_mint_id)
         )
         ''')
         

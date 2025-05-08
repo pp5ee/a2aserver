@@ -17,8 +17,8 @@
             <div class="agent-header">
               <div class="agent-name">{{ agent.name }}</div>
               <div class="agent-status">
-                <span class="status-badge" :class="{'active': agent.is_active}">
-                  {{ agent.is_active ? '在线' : '离线' }}
+                <span class="status-badge" :class="{'active': agent.is_online === 'yes'}">
+                  {{ agent.is_online === 'yes' ? '在线' : '离线' }}
                 </span>
               </div>
             </div>
@@ -30,6 +30,10 @@
               <div class="agent-info-item" v-if="agent.description">
                 <span class="info-label">描述:</span>
                 <span class="info-value">{{ agent.description }}</span>
+              </div>
+              <div class="agent-info-item" v-if="agent.expire_at">
+                <span class="info-label">过期时间:</span>
+                <span class="info-value">{{ formatExpireDate(agent.expire_at) }}</span>
               </div>
             </div>
           </div>
@@ -63,7 +67,7 @@
 
 <script lang="ts">
 import { defineComponent, ref, reactive, onMounted } from 'vue';
-import { apiService } from '@/services/api';
+import { apiService } from '../services/api';
 
 // 定义代理信息接口
 interface AgentInfo {
@@ -71,6 +75,9 @@ interface AgentInfo {
   url: string;
   description?: string;
   is_active?: boolean;
+  is_online?: string;  // 'yes', 'no', 'unknown'
+  expire_at?: string;
+  nft_mint_id?: string;
 }
 
 // 定义提示信息接口
@@ -122,6 +129,24 @@ export default defineComponent({
       }
     };
     
+    // 格式化过期日期
+    const formatExpireDate = (dateString?: string) => {
+      if (!dateString) return '未知';
+      try {
+        const date = new Date(dateString);
+        return date.toLocaleString('zh-CN', {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+      } catch (error) {
+        console.error('日期格式化错误:', error);
+        return dateString;
+      }
+    };
+    
     // 挂载时加载代理列表
     onMounted(() => {
       loadAgents();
@@ -130,7 +155,8 @@ export default defineComponent({
     return {
       agents,
       toast,
-      loadAgents
+      loadAgents,
+      formatExpireDate
     };
   }
 });
@@ -237,6 +263,11 @@ export default defineComponent({
   color: #006644;
 }
 
+.status-badge:not(.active) {
+  background-color: #ffebe6;
+  color: #bf2600;
+}
+
 .agent-details {
   font-size: 0.9rem;
 }
@@ -248,9 +279,9 @@ export default defineComponent({
 }
 
 .info-label {
-  color: #6b778c;
   font-weight: 500;
-  margin-right: 0.5rem;
+  color: #6b778c;
+  margin-bottom: 0.2rem;
 }
 
 .info-value {

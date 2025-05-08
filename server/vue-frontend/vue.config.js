@@ -42,6 +42,14 @@ module.exports = defineConfig({
         onProxyRes: (proxyRes, req, res) => {
           console.log('代理响应状态码:', proxyRes.statusCode);
         }
+      },
+      '/api/metadata-proxy': {
+        target: 'http://8.214.38.69:10003',
+        changeOrigin: true,
+        pathRewrite: {
+          '^/api/metadata-proxy': ''
+        },
+        logLevel: 'debug'
       }
     }
   },
@@ -49,7 +57,23 @@ module.exports = defineConfig({
   publicPath: '/',
   // 构建配置
   configureWebpack: {
-    // 添加环境变量注入
-    plugins: [],
+    resolve: {
+      fallback: {
+        "assert": require.resolve("assert/"),
+        "stream": require.resolve("stream-browserify"),
+        "buffer": require.resolve("buffer/"),
+        "crypto": require.resolve("crypto-browserify"),
+        "path": require.resolve("path-browserify"),
+        "fs": false,
+        "os": require.resolve("os-browserify/browser"),
+      }
+    },
+    plugins: [
+      // 添加Buffer polyfill
+      new (require('webpack')).ProvidePlugin({
+        Buffer: ['buffer', 'Buffer'],
+        process: 'process/browser',
+      }),
+    ]
   }
 }) 

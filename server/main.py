@@ -8,6 +8,7 @@ import threading
 import logging
 import json
 import time
+from typing import Optional
 
 import mesop as me
 
@@ -43,6 +44,7 @@ from fastapi import FastAPI, APIRouter, Request, Response, HTTPException
 from fastapi.middleware.wsgi import WSGIMiddleware
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from fastapi.responses import JSONResponse
 
 load_dotenv()
 
@@ -307,6 +309,67 @@ async def jsonp_middleware(request: Request, call_next):
         )
     
     return response
+
+@app.get("/api/metadata-proxy/{path:path}")
+async def metadata_proxy(path: str, request: Request):
+    """
+    代理元数据请求，解决CORS问题
+    """
+    import httpx
+    
+    # 获取完整的URL路径，包括查询参数
+    full_path = request.url.path.replace("/api/metadata-proxy/", "")
+    query_string = request.url.query.decode()
+    if query_string:
+        full_path = f"{full_path}?{query_string}"
+    
+    # 构建目标URL
+    target_url = f"http://8.214.38.69:10003/{full_path}"
+    
+    try:
+        logger.info(f"代理请求: {target_url}")
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(target_url)
+            
+            # 获取内容类型
+            content_type = response.headers.get("content-type", "application/json")
+            
+            # 返回响应
+            return Response(
+                content=response.content,
+                status_code=response.status_code,
+                headers={"content-type": content_type}
+            )
+    except Exception as e:
+        logger.error(f"代理请求失败: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"代理请求失败: {str(e)}"}
+        )
+
+@app.get("/api/agent/status")
+async def get_agent_status(request: Request, wallet_address: Optional[str] = None):
+    """
+    获取代理状态信息
+    
+    Args:
+        wallet_address: 可选，指定钱包地址。如果不提供，则获取所有代理状态
+        
+    Returns:
+        代理状态信息列表
+    """
+    # 验证API密钥
+    if not await verify_api_key(request):
+        raise HTTPException(status_code=401, detail="未授权访问")
+    
+    # 获取代理状态
+    user_session_manager = UserSessionManager.get_instance()
+    agent_status = user_session_manager.get_agent_status(wallet_address)
+    
+    return {
+        "success": True,
+        "data": agent_status
+    }
 
 app.mount(
     "/",

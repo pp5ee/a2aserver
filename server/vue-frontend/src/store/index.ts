@@ -247,9 +247,7 @@ export default createStore<RootState>({
       commit('setIsPolling', true);
       
       try {
-        // 轮询更新
-        await dispatch('fetchConversations');
-        
+        // 不再自动获取会话列表，仅在当前有会话时获取消息和任务
         if (state.currentConversationId) {
           await dispatch('fetchMessages');
         }

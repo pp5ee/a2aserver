@@ -5,8 +5,20 @@ from pydantic import model_validator, ConfigDict, field_serializer
 from uuid import uuid4
 from enum import Enum
 from typing_extensions import Self
+from datetime import datetime
 
 from common.types import Message, Task, TaskStatus, Artifact, JSONRPCMessage, JSONRPCRequest, JSONRPCError, JSONRPCResponse, AgentCard
+
+
+# 扩展AgentCard类型，添加在线状态等字段
+class ExtendedAgentCard(AgentCard):
+    """扩展的AgentCard类型，增加在线状态、过期时间等字段"""
+    is_online: str = "unknown"  # 在线状态: "yes", "no", "unknown"
+    expire_at: str | None = None  # 过期时间，ISO格式字符串
+    nft_mint_id: str | None = None  # NFT Mint ID
+
+    # 设置模型配置，允许额外字段
+    model_config = ConfigDict(extra="allow")
 
 
 class Conversation(BaseModel):
@@ -84,7 +96,7 @@ class ListAgentRequest(JSONRPCRequest):
   method: Literal["agent/list"] = "agent/list"
 
 class ListAgentResponse(JSONRPCResponse):
-  result: list[AgentCard] | None = None
+  result: list[ExtendedAgentCard] | list[dict] | None = None
 
 AgentRequest = TypeAdapter(
     Annotated[

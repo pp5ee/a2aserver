@@ -34,7 +34,7 @@ function getApiBaseUrl(): string {
   
   // 如果是localhost环境，直接连接本地API端口
   if (hostname === 'localhost' || hostname === '127.0.0.1') {
-    return 'http://localhost:12000';
+    return '/api';
   }
   
   // 其他环境（生产或vercel等），使用当前域名+/beapi路径
@@ -47,7 +47,7 @@ const configs: Record<string, EnvConfig> = {
     apiBaseUrl: getApiBaseUrl()
   },
   localhost: {
-    apiBaseUrl: 'http://localhost:12000'
+    apiBaseUrl: '/api'
   },
   production: {
     apiBaseUrl: getApiBaseUrl()

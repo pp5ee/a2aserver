@@ -1,8 +1,13 @@
 import datetime
 from datetime import timedelta
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Any, Union, Tuple
 import os
+import threading
+import time
+import json
+import uuid
+import sys
 
 # 尝试导入MySQL连接器，如果不可用则使用内存模式
 try:
@@ -37,15 +42,25 @@ class UserSessionManager:
         return cls._instance
     
     def __init__(self):
-        """初始化数据库连接并创建表结构"""
-        if not self._memory_mode:
-            self._initialize_database()
+        """初始化"""
+        # 初始化数据库连接
+        self._initialize_database()
+        # 创建订阅检查器
+        self.subscription_checker = UserSubscriptionChecker(self)
+        # 创建过期代理清理器
+        self.expired_agent_cleaner = ExpiredAgentCleaner(self)
+        # 创建代理状态检查器
+        self.agent_status_checker = AgentStatusChecker(self)
+        # 启动过期代理清理任务
+        self.expired_agent_cleaner.start_cleaner()
+        # 启动代理状态检查任务
+        self.agent_status_checker.start_checker()
         logger.info(f"用户会话管理器初始化完成，使用{'内存' if self._memory_mode else '数据库'}模式")
         
     def _initialize_database(self):
         """初始化MySQL数据库连接"""
-        if self._memory_mode:
-            return
+        # 禁用内存模式，强制使用数据库
+        self._memory_mode = False
             
         try:
             # 首先尝试连接MySQL服务器（不指定数据库）
@@ -54,7 +69,10 @@ class UserSessionManager:
                     host="localhost",
                     port=3306,
                     user="root",
-                    password="orangepi123"
+                    password="orangepi123",
+                    connect_timeout=10,  # 增加连接超时设置
+                    read_timeout=30,     # 增加读取超时设置
+                    write_timeout=30     # 增加写入超时设置
                 )
                 cursor = conn.cursor()
                 
@@ -74,9 +92,8 @@ class UserSessionManager:
                 conn.close()
             except pymysql.Error as err:
                 logger.error(f"无法连接MySQL服务器: {err}")
-                self._memory_mode = True
-                logger.warning("切换到内存模式运行，数据将不会持久化")
-                return
+                # 不再切换到内存模式，而是抛出异常
+                raise Exception(f"数据库连接失败: {err}")
             
             # 现在连接a2a数据库
             self._db_connection = pymysql.connect(
@@ -84,18 +101,22 @@ class UserSessionManager:
                 port=3306,
                 user="root",
                 password="orangepi123",
-                database="a2a"
+                database="a2a",
+                connect_timeout=10,  # 增加连接超时设置
+                read_timeout=30,     # 增加读取超时设置
+                write_timeout=30,    # 增加写入超时设置
+                autocommit=False     # 显式控制事务
             )
             logger.info("数据库连接成功")
             
             # 创建表结构
             self._create_tables()
-        except pymysql.Error as err:
+        except Exception as err:
             logger.error(f"数据库初始化失败: {err}")
-            # 切换到内存模式
-            self._memory_mode = True
-            logger.warning("切换到内存模式运行，数据将不会持久化")
-        
+            # 不再切换到内存模式，而是将数据库连接设为None并抛出异常
+            self._db_connection = None
+            raise Exception(f"数据库初始化失败: {err}")
+            
     def _create_tables(self):
         """创建必要的数据库表"""
         if self._memory_mode:
@@ -119,9 +140,13 @@ class UserSessionManager:
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 wallet_address VARCHAR(255),
                 agent_url VARCHAR(255),
+                nft_mint_id VARCHAR(255),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expire_at TIMESTAMP NULL,
+                is_online VARCHAR(10) DEFAULT 'unknown',
+                agent_card LONGTEXT NULL,
                 FOREIGN KEY (wallet_address) REFERENCES users(wallet_address) ON DELETE CASCADE,
-                UNIQUE(wallet_address, agent_url)
+                UNIQUE(wallet_address, nft_mint_id)
             )
             ''')
             
@@ -253,22 +278,38 @@ class UserSessionManager:
             
         return self._host_managers[wallet_address]
     
-    def _ensure_user_exists(self, wallet_address: str):
-        """确保用户在数据库中存在，如果不存在则创建新用户"""
+    def _ensure_db_connection(self):
+        """确保数据库连接有效"""
         if self._memory_mode:
-            # 内存模式下直接更新用户状态
-            self._memory_users[wallet_address] = datetime.datetime.now()
-            if wallet_address not in self._memory_user_agents:
-                self._memory_user_agents[wallet_address] = []
-            return
-            
-        if not self._db_connection:
-            logger.warning("数据库未连接，无法确保用户存在")
             return
             
         try:
-            self._db_connection.ping(reconnect=True)
+            # 尝试ping数据库，如果失败则重新连接
+            if not self._db_connection:
+                logger.warning("数据库连接不存在，尝试重新连接")
+                self._initialize_database()
+                return
+                
+            try:
+                self._db_connection.ping(reconnect=True)
+            except Exception as e:
+                logger.warning(f"数据库ping失败: {e}，尝试重新连接")
+                self._initialize_database()
+        except Exception as e:
+            logger.error(f"确保数据库连接时出错: {e}")
+            # 如果重连失败，切换到内存模式
+            self._memory_mode = True
+            logger.warning("切换到内存模式运行，数据将不会持久化")
+    
+    def _ensure_user_exists(self, wallet_address: str):
+        """确保用户在数据库中存在，如果不存在则创建新用户"""
+        # 强制使用数据库模式
+        self._memory_mode = False
+        
+        # 确保数据库连接有效
+        self._ensure_db_connection()
             
+        try:
             cursor = self._db_connection.cursor()
             cursor.execute("SELECT wallet_address FROM users WHERE wallet_address = %s", (wallet_address,))
             result = cursor.fetchone()
@@ -286,15 +327,26 @@ class UserSessionManager:
             cursor.close()
         except Exception as err:
             logger.error(f"确保用户存在时出错: {err}")
-            # 切换到内存模式
-            if not self._memory_mode:
-                self._memory_mode = True
-                logger.warning("切换到内存模式运行，数据将不会持久化")
-                # 确保在内存中存在
-                self._memory_users[wallet_address] = datetime.datetime.now()
-                if wallet_address not in self._memory_user_agents:
-                    self._memory_user_agents[wallet_address] = []
-    
+            # 尝试重新连接数据库
+            try:
+                self._ensure_db_connection()
+                # 重试一次
+                cursor = self._db_connection.cursor()
+                cursor.execute("SELECT wallet_address FROM users WHERE wallet_address = %s", (wallet_address,))
+                result = cursor.fetchone()
+                
+                if not result:
+                    cursor.execute("INSERT INTO users (wallet_address) VALUES (%s)", (wallet_address,))
+                    self._db_connection.commit()
+                else:
+                    cursor.execute("UPDATE users SET last_active = CURRENT_TIMESTAMP WHERE wallet_address = %s", (wallet_address,))
+                    self._db_connection.commit()
+                    
+                cursor.close()
+            except Exception as retry_err:
+                logger.error(f"重试确保用户存在时出错: {retry_err}")
+                raise Exception(f"无法确保用户存在: {retry_err}")
+                
     def _restore_user_agents(self, wallet_address: str, host_manager: ADKHostManager):
         """从数据库恢复用户之前注册的代理"""
         if self._memory_mode:
@@ -327,11 +379,7 @@ class UserSessionManager:
             cursor.close()
         except Exception as err:
             logger.error(f"恢复用户代理时出错: {err}")
-            # 切换到内存模式
-            if not self._memory_mode:
-                self._memory_mode = True
-                logger.warning("切换到内存模式运行，数据将不会持久化")
-    
+        
     def register_agent(self, wallet_address: str, agent_url: str) -> Optional[AgentCard]:
         """为指定用户注册代理"""
         logger.info(f"为用户 {wallet_address} 注册代理: {agent_url}")
@@ -1236,4 +1284,981 @@ class UserSessionManager:
                 return False
         except Exception as err:
             logger.error(f"删除任务时出错: {err}")
-            return False 
+            return False
+
+    def update_user_activity(self, wallet_address: str):
+        """更新用户活跃状态并启动订阅检查"""
+        # 确保用户存在
+        self._ensure_user_exists(wallet_address)
+        
+        # 更新用户活跃时间
+        if self._memory_mode:
+            self._memory_users[wallet_address] = datetime.datetime.now()
+        elif self._db_connection:
+            try:
+                self._db_connection.ping(reconnect=True)
+                cursor = self._db_connection.cursor()
+                cursor.execute(
+                    "UPDATE users SET last_active = CURRENT_TIMESTAMP WHERE wallet_address = %s",
+                    (wallet_address,)
+                )
+                self._db_connection.commit()
+                cursor.close()
+            except Exception as err:
+                logger.error(f"更新用户活跃状态时出错: {err}")
+        
+        # 更新订阅检查器中的用户活跃状态
+        self.subscription_checker.update_user_activity(wallet_address)
+
+    async def update_user_subscriptions(self, wallet_address: str):
+        """检查并更新用户的NFT订阅状态"""
+        if not wallet_address:
+            return
+            
+        logger.info(f"检查用户 {wallet_address} 的NFT订阅状态")
+        
+        try:
+            # 从Solana获取用户的NFT订阅状态
+            valid_subscriptions = await self._get_user_valid_subscriptions(wallet_address)
+            
+            if not valid_subscriptions:
+                logger.info(f"用户 {wallet_address} 没有有效的NFT订阅")
+                # 清理所有过期的代理
+                self._remove_expired_agents(wallet_address)
+                return
+                
+            # 更新数据库中的订阅信息
+            self._update_user_agent_subscriptions(wallet_address, valid_subscriptions)
+            
+            # 清理过期的代理
+            self._remove_expired_agents(wallet_address)
+            
+        except Exception as e:
+            logger.error(f"更新用户 {wallet_address} 的NFT订阅时出错: {e}")
+            # 如果出错，尝试重新连接数据库
+            try:
+                self._ensure_db_connection()
+            except Exception:
+                # 如果重连失败，切换到内存模式
+                self._memory_mode = True
+                logger.warning("切换到内存模式运行，数据将不会持久化")
+    
+    async def _get_user_valid_subscriptions(self, wallet_address: str):
+        """从Solana获取用户有效的NFT订阅
+        
+        返回格式: [
+            {
+                'nft_mint_id': 'mint_address',
+                'agent_url': 'agent_url',
+                'expire_at': datetime对象
+            }
+        ]
+        """
+        # 这里需要调用Solana API获取用户的NFT订阅信息
+        
+        try:
+            from utils.solana_verifier import get_user_subscriptions
+            # 调用异步函数获取用户的有效订阅列表
+            return await get_user_subscriptions(wallet_address)
+        except ImportError:
+            logger.warning("未找到solana_verifier模块，使用模拟数据")
+            return []
+    
+    def _update_user_agent_subscriptions(self, wallet_address: str, subscriptions: list):
+        """更新用户代理的订阅信息"""
+        if self._memory_mode:
+            # 内存模式下不需要更新数据库
+            return
+            
+        if not self._db_connection:
+            logger.warning("数据库未连接，无法更新用户订阅")
+            return
+            
+        try:
+            # 确保数据库连接有效
+            self._ensure_db_connection()
+            
+            cursor = self._db_connection.cursor()
+            
+            for sub in subscriptions:
+                try:
+                    nft_mint_id = sub.get('nft_mint_id')
+                    agent_url = sub.get('agent_url')
+                    expire_at = sub.get('expire_at')
+                    
+                    logger.info(f"处理订阅: mint={nft_mint_id}, url={agent_url}, 过期时间={expire_at}")
+                    
+                    if not all([nft_mint_id, agent_url, expire_at]):
+                        logger.warning(f"订阅数据不完整: {sub}")
+                        continue
+                    
+                    # 确保expire_at是datetime对象
+                    if not isinstance(expire_at, datetime.datetime):
+                        logger.warning(f"过期时间不是datetime对象: {type(expire_at)}, 值: {expire_at}")
+                        # 尝试转换
+                        try:
+                            if isinstance(expire_at, (int, float)):
+                                expire_at = datetime.datetime.fromtimestamp(expire_at)
+                            elif isinstance(expire_at, str):
+                                expire_at = datetime.datetime.fromisoformat(expire_at)
+                            logger.info(f"转换后的过期时间: {expire_at}")
+                        except Exception as convert_err:
+                            logger.error(f"转换过期时间失败: {convert_err}")
+                            continue
+                        
+                    # 检查该代理是否已存在
+                    cursor.execute(
+                        "SELECT id FROM user_agents WHERE wallet_address = %s AND nft_mint_id = %s",
+                        (wallet_address, nft_mint_id)
+                    )
+                    existing = cursor.fetchone()
+                    
+                    if existing:
+                        # 更新现有记录
+                        logger.info(f"更新现有NFT订阅: mint={nft_mint_id}, url={agent_url}")
+                        try:
+                            cursor.execute(
+                                """
+                                UPDATE user_agents 
+                                SET agent_url = %s, expire_at = %s, is_online = 'unknown' 
+                                WHERE wallet_address = %s AND nft_mint_id = %s
+                                """,
+                                (agent_url, expire_at, wallet_address, nft_mint_id)
+                            )
+                        except Exception as update_err:
+                            logger.error(f"更新NFT订阅记录失败: {update_err}")
+                            # 尝试使用字符串格式
+                            try:
+                                expire_at_str = expire_at.strftime('%Y-%m-%d %H:%M:%S')
+                                cursor.execute(
+                                    """
+                                    UPDATE user_agents 
+                                    SET agent_url = %s, expire_at = %s, is_online = 'unknown' 
+                                    WHERE wallet_address = %s AND nft_mint_id = %s
+                                    """,
+                                    (agent_url, expire_at_str, wallet_address, nft_mint_id)
+                                )
+                                logger.info(f"使用字符串格式更新成功: {expire_at_str}")
+                            except Exception as retry_err:
+                                logger.error(f"使用字符串格式更新也失败: {retry_err}")
+                                continue
+                    else:
+                        # 插入新记录
+                        logger.info(f"插入新NFT订阅: mint={nft_mint_id}, url={agent_url}")
+                        try:
+                            cursor.execute(
+                                """
+                                INSERT INTO user_agents 
+                                (wallet_address, agent_url, nft_mint_id, expire_at, is_online) 
+                                VALUES (%s, %s, %s, %s, 'unknown')
+                                """,
+                                (wallet_address, agent_url, nft_mint_id, expire_at)
+                            )
+                        except Exception as insert_err:
+                            logger.error(f"插入NFT订阅记录失败: {insert_err}")
+                            # 尝试使用字符串格式
+                            try:
+                                expire_at_str = expire_at.strftime('%Y-%m-%d %H:%M:%S')
+                                cursor.execute(
+                                    """
+                                    INSERT INTO user_agents 
+                                    (wallet_address, agent_url, nft_mint_id, expire_at, is_online) 
+                                    VALUES (%s, %s, %s, %s, 'unknown')
+                                    """,
+                                    (wallet_address, agent_url, nft_mint_id, expire_at_str)
+                                )
+                                logger.info(f"使用字符串格式插入成功: {expire_at_str}")
+                            except Exception as retry_err:
+                                logger.error(f"使用字符串格式插入也失败: {retry_err}")
+                                continue
+                except Exception as sub_err:
+                    logger.error(f"处理单个订阅时出错: {sub_err}")
+                    continue
+            
+            try:
+                self._db_connection.commit()
+                logger.info(f"成功更新用户 {wallet_address} 的订阅信息")
+            except Exception as commit_err:
+                logger.error(f"提交事务失败: {commit_err}")
+                try:
+                    self._db_connection.rollback()
+                except Exception:
+                    pass
+            
+            cursor.close()
+            
+        except Exception as err:
+            logger.error(f"更新用户订阅信息时出错: {err}")
+            import traceback
+            logger.error(f"错误详情: {traceback.format_exc()}")
+            
+            # 尝试回滚事务
+            try:
+                if self._db_connection:
+                    self._db_connection.rollback()
+            except Exception:
+                pass
+                
+            # 尝试重新连接数据库
+            try:
+                self._initialize_database()
+            except Exception as db_err:
+                logger.error(f"重新连接数据库失败: {db_err}")
+                # 切换到内存模式
+                self._memory_mode = True
+                logger.warning("切换到内存模式运行，数据将不会持久化")
+
+    def _remove_expired_agents(self, wallet_address: str):
+        """移除过期的代理"""
+        logger.info("开始清理过期代理")
+        
+        # 确保数据库连接有效
+        try:
+            # 强制使用数据库模式
+            self._memory_mode = False
+            
+            # 确保数据库连接
+            self._ensure_db_connection()
+            
+            if not self._db_connection:
+                logger.error("无法连接到数据库，跳过本次清理")
+                return
+                    
+            # 创建游标
+            cursor = None
+            try:
+                cursor = self._db_connection.cursor()
+                
+                # 查询所有过期的代理
+                cursor.execute(
+                    """
+                    SELECT wallet_address, agent_url, nft_mint_id 
+                    FROM user_agents 
+                    WHERE expire_at IS NOT NULL AND expire_at < CURRENT_TIMESTAMP
+                    """
+                )
+                
+                expired_agents = cursor.fetchall()
+                if not expired_agents:
+                    logger.info("未发现过期代理")
+                    return
+                    
+                logger.info(f"发现 {len(expired_agents)} 个过期代理，准备清理")
+                
+                # 删除过期的代理
+                cursor.execute(
+                    """
+                    DELETE FROM user_agents 
+                    WHERE expire_at IS NOT NULL AND expire_at < CURRENT_TIMESTAMP
+                    """
+                )
+                
+                deleted_count = cursor.rowcount
+                self._db_connection.commit()
+                
+                logger.info(f"已清理 {deleted_count} 个过期代理")
+                
+                # 重新加载受影响用户的代理列表
+                affected_wallets = set()
+                for wallet_address, _, _ in expired_agents:
+                    affected_wallets.add(wallet_address)
+                    
+                for wallet_address in affected_wallets:
+                    if wallet_address in self._host_managers:
+                        logger.info(f"重新加载用户 {wallet_address} 的代理列表")
+                        self.refresh_user_agents(wallet_address)
+            except Exception as e:
+                logger.error(f"清理过期代理操作失败: {e}")
+                # 如果是事务中，尝试回滚
+                try:
+                    if self._db_connection:
+                        self._db_connection.rollback()
+                except Exception:
+                    pass
+                
+                # 尝试重新连接数据库
+                self._ensure_db_connection()
+            finally:
+                # 确保游标关闭
+                try:
+                    if cursor:
+                        cursor.close()
+                except Exception:
+                    pass
+        except Exception as err:
+            logger.error(f"清理过期代理时出错: {err}")
+            # 如果重连失败，切换到内存模式
+            self._memory_mode = True
+            logger.warning("切换到内存模式运行，数据将不会持久化")
+
+    def get_agent_status(self, wallet_address: str = None) -> List[Dict[str, Any]]:
+        """
+        获取代理状态信息
+        
+        Args:
+            wallet_address: 可选，指定钱包地址。如果不提供，则获取所有代理状态
+            
+        Returns:
+            List[Dict[str, Any]]: 代理状态信息列表
+        """
+        if self._memory_mode:
+            logger.warning("内存模式下不支持获取代理状态")
+            return []
+            
+        try:
+            # 确保数据库连接有效
+            self._ensure_db_connection()
+            
+            cursor = self._db_connection.cursor()
+            
+            if wallet_address:
+                # 获取指定钱包地址的代理状态
+                cursor.execute(
+                    """
+                    SELECT nft_mint_id, agent_url, is_online, agent_card, expire_at 
+                    FROM user_agents 
+                    WHERE wallet_address = %s
+                    """,
+                    (wallet_address,)
+                )
+            else:
+                # 获取所有代理状态
+                cursor.execute(
+                    """
+                    SELECT wallet_address, nft_mint_id, agent_url, is_online, agent_card, expire_at 
+                    FROM user_agents
+                    """
+                )
+            
+            results = []
+            for row in cursor.fetchall():
+                if wallet_address:
+                    nft_mint_id, agent_url, is_online, agent_card_json, expire_at = row
+                    agent_info = {
+                        'nft_mint_id': nft_mint_id,
+                        'agent_url': agent_url,
+                        'is_online': is_online,
+                        'expire_at': expire_at
+                    }
+                else:
+                    wallet_address_db, nft_mint_id, agent_url, is_online, agent_card_json, expire_at = row
+                    agent_info = {
+                        'wallet_address': wallet_address_db,
+                        'nft_mint_id': nft_mint_id,
+                        'agent_url': agent_url,
+                        'is_online': is_online,
+                        'expire_at': expire_at
+                    }
+                
+                # 解析agent_card
+                if agent_card_json:
+                    try:
+                        agent_info['agent_card'] = json.loads(agent_card_json)
+                    except:
+                        logger.warning(f"解析代理卡片JSON失败: {agent_card_json[:100]}...")
+                
+                results.append(agent_info)
+            
+            cursor.close()
+            return results
+            
+        except Exception as e:
+            logger.error(f"获取代理状态时出错: {e}")
+            import traceback
+            logger.error(f"错误详情: {traceback.format_exc()}")
+            return []
+
+    def queryAgentsByAddress(self, wallet_address: str) -> List[Dict[str, Any]]:
+        """
+        从数据库查询用户的所有代理信息
+        
+        Args:
+            wallet_address: 用户钱包地址
+            
+        Returns:
+            List[Dict[str, Any]]: 代理信息列表，包含在线状态、过期时间等
+        """
+        logger.info(f"查询用户 {wallet_address} 的代理信息")
+        
+            
+        try:
+            # 确保数据库连接有效
+            self._ensure_db_connection()
+            
+            cursor = self._db_connection.cursor()
+            
+            # 从数据库获取代理信息
+            cursor.execute(
+                """
+                SELECT nft_mint_id, agent_url, is_online, agent_card, expire_at 
+                FROM user_agents 
+                WHERE wallet_address = %s
+                """,
+                (wallet_address,)
+            )
+            
+            results = []
+            for row in cursor.fetchall():
+                nft_mint_id, agent_url, is_online, agent_card_json, expire_at = row
+                
+                # 创建基本信息
+                agent_info = {
+                    'nft_mint_id': nft_mint_id,
+                    'url': agent_url,  # 使用URL作为标准字段
+                    'is_online': is_online,
+                    'expire_at': expire_at.isoformat() if expire_at else None
+                }
+                
+                # 解析agent_card JSON
+                if agent_card_json:
+                    try:
+                        card_data = json.loads(agent_card_json)
+                        # 合并agent_card中的字段到结果中
+                        agent_info.update(card_data)
+                    except Exception as e:
+                        logger.warning(f"解析代理卡片JSON失败: {str(e)}")
+                        # 确保包含基本字段
+                        if 'name' not in agent_info:
+                            agent_info['name'] = f"Agent ({agent_url})"
+                        if 'description' not in agent_info:
+                            agent_info['description'] = "No description available"
+                else:
+                    # 为缺少card数据的agent提供默认值
+                    agent_info['name'] = f"Agent ({agent_url})"
+                    agent_info['description'] = "No description available"
+                    agent_info['capabilities'] = {
+                        'streaming': True,
+                        'pushNotifications': False,
+                        'stateTransitionHistory': False
+                    }
+                
+                results.append(agent_info)
+            
+            cursor.close()
+            logger.info(f"为用户 {wallet_address} 查询到 {len(results)} 个代理")
+            return results
+            
+        except Exception as e:
+            logger.error(f"查询用户代理信息时出错: {e}")
+            import traceback
+            logger.error(f"错误详情: {traceback.format_exc()}")
+            return []
+
+    def force_mark_agent_online(self, agent_url: str) -> bool:
+        """
+        强制将指定URL的代理标记为在线
+        
+        Args:
+            agent_url: 代理URL
+            
+        Returns:
+            bool: 操作是否成功
+        """
+        logger.info(f"手动将代理 {agent_url} 标记为在线")
+        
+        if self._memory_mode:
+            logger.warning("内存模式下不支持修改代理状态")
+            return False
+            
+        try:
+            # 确保数据库连接有效
+            self._ensure_db_connection()
+            
+            cursor = self._db_connection.cursor()
+            
+            # 查询匹配的代理
+            cursor.execute(
+                "SELECT id FROM user_agents WHERE agent_url = %s OR agent_url LIKE %s",
+                (agent_url, f"%{agent_url}%")
+            )
+            
+            agents = cursor.fetchall()
+            if not agents:
+                logger.warning(f"未找到URL包含 {agent_url} 的代理")
+                cursor.close()
+                return False
+                
+            updated_count = 0
+            for (agent_id,) in agents:
+                # 更新代理状态为在线
+                cursor.execute(
+                    "UPDATE user_agents SET is_online = 'yes' WHERE id = %s",
+                    (agent_id,)
+                )
+                updated_count += 1
+                
+            self._db_connection.commit()
+            cursor.close()
+            
+            logger.info(f"成功将 {updated_count} 个代理标记为在线")
+            return True
+            
+        except Exception as e:
+            logger.error(f"标记代理在线状态时出错: {e}")
+            import traceback
+            logger.error(f"错误详情: {traceback.format_exc()}")
+            return False
+
+class UserSubscriptionChecker:
+    """用户NFT订阅检查的定时任务管理器"""
+    
+    def __init__(self, user_session_manager):
+        self.user_session_manager = user_session_manager
+        self.user_timers = {}  # 存储用户定时任务 {wallet_address: timer_thread}
+        self.user_last_active = {}  # 存储用户最后活跃时间 {wallet_address: datetime}
+        self.stop_flags = {}  # 存储停止标志 {wallet_address: bool}
+        self.lock = threading.Lock()  # 线程锁，确保线程安全
+        
+    def start_subscription_checker(self, wallet_address: str):
+        """为用户启动订阅检查定时任务"""
+        with self.lock:
+            # 如果用户已有定时任务在运行，则不需要再次启动
+            if wallet_address in self.user_timers and self.user_timers[wallet_address].is_alive():
+                # 只更新最后活跃时间
+                self.user_last_active[wallet_address] = datetime.datetime.now()
+                return
+                
+            # 设置停止标志为False
+            self.stop_flags[wallet_address] = False
+            # 记录用户最后活跃时间
+            self.user_last_active[wallet_address] = datetime.datetime.now()
+            
+            # 创建并启动定时任务线程
+            timer_thread = threading.Thread(
+                target=self._subscription_checker_task,
+                args=(wallet_address,),
+                daemon=True  # 设置为守护线程，主程序退出时自动结束
+            )
+            self.user_timers[wallet_address] = timer_thread
+            timer_thread.start()
+            
+            logger.info(f"为用户 {wallet_address} 启动NFT订阅检查定时任务")
+    
+    def update_user_activity(self, wallet_address: str):
+        """更新用户最后活跃时间"""
+        with self.lock:
+            if wallet_address in self.user_last_active:
+                self.user_last_active[wallet_address] = datetime.datetime.now()
+                # 如果定时任务已经停止，则重新启动
+                if wallet_address in self.stop_flags and self.stop_flags[wallet_address]:
+                    self.start_subscription_checker(wallet_address)
+    
+    def stop_subscription_checker(self, wallet_address: str):
+        """停止用户的订阅检查定时任务"""
+        with self.lock:
+            if wallet_address in self.stop_flags:
+                self.stop_flags[wallet_address] = True
+                logger.info(f"标记停止用户 {wallet_address} 的NFT订阅检查定时任务")
+    
+    def _subscription_checker_task(self, wallet_address: str):
+        """订阅检查定时任务的执行函数"""
+        while True:
+            # 检查是否需要停止
+            with self.lock:
+                if self.stop_flags.get(wallet_address, True):
+                    logger.info(f"用户 {wallet_address} 的NFT订阅检查定时任务已停止")
+                    return
+                
+                # 检查用户是否超过30分钟未活跃
+                last_active = self.user_last_active.get(wallet_address)
+                if last_active:
+                    inactive_duration = datetime.datetime.now() - last_active
+                    if inactive_duration.total_seconds() > 30 * 60:  # 30分钟
+                        logger.info(f"用户 {wallet_address} 超过30分钟未活跃，停止NFT订阅检查")
+                        self.stop_flags[wallet_address] = True
+                        return
+            
+            try:
+                # 执行NFT订阅状态检查
+                # 创建一个异步事件循环来运行异步函数
+                import asyncio
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(self._check_user_subscriptions(wallet_address))
+                finally:
+                    loop.close()
+            except Exception as e:
+                logger.error(f"检查用户 {wallet_address} 的NFT订阅时出错: {e}")
+            
+            # 等待1分钟
+            time.sleep(60)
+    
+    async def _check_user_subscriptions(self, wallet_address: str):
+        """检查用户的NFT订阅状态并更新数据库"""
+        logger.info(f"开始检查用户 {wallet_address} 的NFT订阅状态")
+        
+        # 调用用户会话管理器的方法来检查和更新订阅
+        await self.user_session_manager.update_user_subscriptions(wallet_address)
+        
+        logger.info(f"完成用户 {wallet_address} 的NFT订阅状态检查")
+
+class ExpiredAgentCleaner:
+    """定时清理过期代理的任务管理器"""
+    
+    def __init__(self, user_session_manager):
+        self.user_session_manager = user_session_manager
+        self.timer_thread = None
+        self.stop_flag = False
+        self.lock = threading.Lock()
+        self.interval = 30  # 每30秒扫描一次
+        
+    def start_cleaner(self):
+        """启动清理任务"""
+        with self.lock:
+            if self.timer_thread and self.timer_thread.is_alive():
+                logger.info("过期代理清理任务已在运行")
+                return
+                
+            # 设置停止标志为False
+            self.stop_flag = False
+            
+            # 创建并启动定时任务线程
+            self.timer_thread = threading.Thread(
+                target=self._cleaner_task,
+                daemon=True  # 设置为守护线程，主程序退出时自动结束
+            )
+            self.timer_thread.start()
+            
+            logger.info(f"已启动过期代理清理任务，间隔: {self.interval}秒")
+    
+    def stop_cleaner(self):
+        """停止清理任务"""
+        with self.lock:
+            self.stop_flag = True
+            logger.info("已标记停止过期代理清理任务")
+    
+    def _cleaner_task(self):
+        """清理任务的执行函数"""
+        while True:
+            # 检查是否需要停止
+            with self.lock:
+                if self.stop_flag:
+                    logger.info("过期代理清理任务已停止")
+                    return
+            
+            try:
+                # 执行清理过期代理的操作
+                self._clean_expired_agents()
+            except Exception as e:
+                logger.error(f"清理过期代理时出错: {e}")
+            
+            # 等待指定的时间间隔
+            time.sleep(self.interval)
+    
+    def _clean_expired_agents(self):
+        """清理所有过期的代理"""
+        logger.info("开始清理过期代理")
+        
+        # 确保数据库连接有效
+        try:
+            # 强制使用数据库模式
+            self.user_session_manager._memory_mode = False
+            
+            # 确保数据库连接
+            self.user_session_manager._ensure_db_connection()
+            
+            if not self.user_session_manager._db_connection:
+                logger.error("无法连接到数据库，跳过本次清理")
+                return
+                    
+            # 创建游标
+            cursor = None
+            try:
+                cursor = self.user_session_manager._db_connection.cursor()
+                
+                # 查询所有过期的代理
+                cursor.execute(
+                    """
+                    SELECT wallet_address, agent_url, nft_mint_id 
+                    FROM user_agents 
+                    WHERE expire_at IS NOT NULL AND expire_at < CURRENT_TIMESTAMP
+                    """
+                )
+                
+                expired_agents = cursor.fetchall()
+                if not expired_agents:
+                    logger.info("未发现过期代理")
+                    return
+                    
+                logger.info(f"发现 {len(expired_agents)} 个过期代理，准备清理")
+                
+                # 删除过期的代理
+                cursor.execute(
+                    """
+                    DELETE FROM user_agents 
+                    WHERE expire_at IS NOT NULL AND expire_at < CURRENT_TIMESTAMP
+                    """
+                )
+                
+                deleted_count = cursor.rowcount
+                self.user_session_manager._db_connection.commit()
+                
+                logger.info(f"已清理 {deleted_count} 个过期代理")
+                
+                # 重新加载受影响用户的代理列表
+                affected_wallets = set()
+                for wallet_address, _, _ in expired_agents:
+                    affected_wallets.add(wallet_address)
+                    
+                for wallet_address in affected_wallets:
+                    if wallet_address in self.user_session_manager._host_managers:
+                        logger.info(f"重新加载用户 {wallet_address} 的代理列表")
+                        self.user_session_manager.refresh_user_agents(wallet_address)
+            except Exception as e:
+                logger.error(f"清理过期代理操作失败: {e}")
+                # 如果是事务中，尝试回滚
+                try:
+                    if self.user_session_manager._db_connection:
+                        self.user_session_manager._db_connection.rollback()
+                except Exception:
+                    pass
+                
+                # 尝试重新连接数据库
+                self.user_session_manager._ensure_db_connection()
+            finally:
+                # 确保游标关闭
+                try:
+                    if cursor:
+                        cursor.close()
+                except Exception:
+                    pass
+        except Exception as err:
+            logger.error(f"清理过期代理时出错: {err}")
+            # 如果重连失败，切换到内存模式
+            self.user_session_manager._memory_mode = True
+            logger.warning("切换到内存模式运行，数据将不会持久化")
+
+class AgentStatusChecker:
+    """代理状态检查的定时任务管理器"""
+    
+    def __init__(self, user_session_manager):
+        self.user_session_manager = user_session_manager
+        self.timer_thread = None
+        self.stop_flag = False
+        self.lock = threading.Lock()
+        self.interval = 60  # 每60秒检查一次
+        
+    def start_checker(self):
+        """启动检查任务"""
+        with self.lock:
+            if self.timer_thread and self.timer_thread.is_alive():
+                logger.info("代理状态检查任务已在运行")
+                return
+                
+            # 设置停止标志为False
+            self.stop_flag = False
+            
+            # 创建并启动定时任务线程
+            self.timer_thread = threading.Thread(
+                target=self._checker_task,
+                daemon=True  # 设置为守护线程，主程序退出时自动结束
+            )
+            self.timer_thread.start()
+            
+            logger.info(f"已启动代理状态检查任务，间隔: {self.interval}秒")
+    
+    def stop_checker(self):
+        """停止检查任务"""
+        with self.lock:
+            self.stop_flag = True
+            logger.info("已标记停止代理状态检查任务")
+    
+    def _checker_task(self):
+        """检查任务的执行函数"""
+        while True:
+            # 检查是否需要停止
+            with self.lock:
+                if self.stop_flag:
+                    logger.info("代理状态检查任务已停止")
+                    return
+            
+            try:
+                # 执行代理状态检查
+                self._check_all_agents()
+            except Exception as e:
+                logger.error(f"检查代理状态时出错: {e}")
+                import traceback
+                logger.error(f"错误详情: {traceback.format_exc()}")
+            
+            # 等待指定的时间间隔
+            time.sleep(self.interval)
+    
+    def _check_all_agents(self):
+        """检查所有代理的状态"""
+        logger.info("开始检查所有代理状态")
+        
+        if self.user_session_manager._memory_mode:
+            logger.warning("内存模式下不支持代理状态检查")
+            return
+            
+        try:
+            # 确保数据库连接有效
+            self.user_session_manager._ensure_db_connection()
+            
+            cursor = self.user_session_manager._db_connection.cursor()
+            
+            # 获取所有代理
+            cursor.execute("SELECT id, agent_url FROM user_agents")
+            agents = cursor.fetchall()
+            
+            logger.info(f"找到 {len(agents)} 个代理需要检查状态")
+            
+            for agent_id, agent_url in agents:
+                try:
+                    # 检查代理状态
+                    is_online, agent_card = self._check_agent_status(agent_url)
+                    
+                    # 更新数据库
+                    if agent_card:
+                        agent_card_json = json.dumps(agent_card)
+                        cursor.execute(
+                            "UPDATE user_agents SET is_online = %s, agent_card = %s WHERE id = %s",
+                            (is_online, agent_card_json, agent_id)
+                        )
+                    else:
+                        cursor.execute(
+                            "UPDATE user_agents SET is_online = %s WHERE id = %s",
+                            (is_online, agent_id)
+                        )
+                        
+                    logger.info(f"代理 {agent_url} 状态: {is_online}")
+                    
+                except Exception as e:
+                    logger.error(f"检查代理 {agent_url} 状态时出错: {e}")
+                    continue
+            
+            # 提交事务
+            self.user_session_manager._db_connection.commit()
+            cursor.close()
+            
+            logger.info("完成所有代理状态检查")
+            
+        except Exception as e:
+            logger.error(f"检查代理状态过程中出错: {e}")
+            import traceback
+            logger.error(f"错误详情: {traceback.format_exc()}")
+    
+    def _check_agent_status(self, agent_url):
+        """
+        检查单个代理的状态
+        
+        Args:
+            agent_url: 代理URL
+            
+        Returns:
+            tuple: (is_online, agent_card)
+                is_online: 'yes' 或 'no'
+                agent_card: 代理卡片数据，如果获取失败则为None
+        """
+        try:
+            import requests
+            
+            logger.info(f"正在检查代理状态: {agent_url}")
+            
+            # 构建.well-known/agent.json URL
+            agent_json_url = self._build_agent_json_url(agent_url)
+            logger.info(f"请求agent.json URL: {agent_json_url}")
+            
+            # 设置较短的超时时间，避免长时间等待
+            response = requests.get(agent_json_url, timeout=5)
+            
+            if response.status_code == 200:
+                try:
+                    # 尝试解析JSON响应
+                    agent_card = response.json()
+                    
+                    # 验证是否是有效的agent card
+                    if isinstance(agent_card, dict) and 'name' in agent_card and 'description' in agent_card:
+                        logger.info(f"代理 {agent_url} 在线，获取到有效的agent card")
+                        return 'yes', agent_card
+                    else:
+                        logger.warning(f"代理 {agent_url} 在线，但返回的不是有效的agent card格式")
+                        return 'yes', None
+                except Exception as json_err:
+                    # 响应不是有效的JSON
+                    logger.warning(f"代理 {agent_url} 返回的不是有效的JSON: {json_err}")
+                    return 'yes', None
+            else:
+                # 响应状态码不是200
+                logger.warning(f"代理 {agent_url} 返回状态码: {response.status_code}")
+                return 'no', None
+                
+        except requests.exceptions.Timeout:
+            # 请求超时
+            logger.warning(f"请求代理 {agent_url} 超时")
+            return 'no', None
+        except requests.exceptions.ConnectionError:
+            # 连接错误
+            logger.warning(f"连接代理 {agent_url} 失败")
+            return 'no', None
+        except Exception as e:
+            # 其他错误
+            logger.error(f"请求代理 {agent_url} 时发生未知错误: {e}")
+            return 'no', None
+    
+    def _build_agent_json_url(self, agent_url):
+        """
+        构建获取agent.json的完整URL
+        
+        Args:
+            agent_url: 基础代理URL
+            
+        Returns:
+            str: agent.json的完整URL
+        """
+        # 清理URL中可能的@前缀
+        if agent_url.startswith('@'):
+            agent_url = agent_url[1:]
+            
+        # 检查URL是否已包含.well-known/agent.json
+        if "/.well-known/agent.json" in agent_url:
+            return agent_url
+            
+        # 确保地址以/结尾
+        if not agent_url.endswith("/"):
+            agent_url += "/"
+            
+        # 拼接.well-known/agent.json
+        agent_url += ".well-known/agent.json"
+        
+        # 确保使用http://开头的URL
+        if not (agent_url.startswith("http://") or agent_url.startswith("https://")):
+            agent_url = "http://" + agent_url
+            
+        return agent_url
+
+# 命令行工具功能
+async def cli_mark_agent_online(agent_url):
+    """命令行工具：将代理标记为在线"""
+    manager = UserSessionManager.get_instance()
+    result = manager.force_mark_agent_online(agent_url)
+    if result:
+        print(f"成功将代理 {agent_url} 标记为在线")
+    else:
+        print(f"标记代理 {agent_url} 为在线失败")
+    return result
+
+# 如果直接运行此文件，则执行命令行功能
+if __name__ == "__main__":
+    import sys
+    import asyncio
+    
+    if len(sys.argv) < 2:
+        print("用法: python user_session_manager.py mark_online <agent_url>")
+        sys.exit(1)
+        
+    command = sys.argv[1]
+    
+    if command == "mark_online":
+        if len(sys.argv) < 3:
+            print("错误: 请提供代理URL")
+            print("用法: python user_session_manager.py mark_online <agent_url>")
+            sys.exit(1)
+            
+        agent_url = sys.argv[2]
+        asyncio.run(cli_mark_agent_online(agent_url))
+    else:
+        print(f"未知命令: {command}")
+        print("可用命令: mark_online")
+        sys.exit(1)

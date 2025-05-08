@@ -7,6 +7,7 @@ requires-python = ">=3.10"
 dependencies = [
     "semantic-kernel>=1.28.0",
     "a2a-samples",
+    "pyyaml>=6.0",
 ]
 
 [tool.hatch.build.targets.wheel]

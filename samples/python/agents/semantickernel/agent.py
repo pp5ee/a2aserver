@@ -14,6 +14,7 @@ from semantic_kernel.contents import (
 )
 from semantic_kernel.functions.kernel_arguments import KernelArguments
 from semantic_kernel.functions import kernel_function
+import yaml
 
 if TYPE_CHECKING:
     from semantic_kernel.contents import ChatMessageContent
@@ -21,6 +22,76 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 load_dotenv()
+
+# region Config Loader
+
+def load_config() -> dict:
+    """从配置文件加载API配置"""
+    load_dotenv()
+    
+    # 首先尝试读取环境变量
+    config = {
+        "base_url": os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"),
+        "api_key": os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY", "")),
+        "model": os.getenv("LLM_MODEL", "gpt-4.1")
+    }
+    
+    # 尝试从配置文件读取（如果存在）
+    config_paths = [
+        "./config.yaml",
+        "./config.yml", 
+        "./agent_config.yaml",
+        "./agent_config.yml",
+        os.path.join(os.path.dirname(__file__), "config.yaml"),
+        os.path.join(os.path.dirname(__file__), "config.yml")
+    ]
+    
+    for config_path in config_paths:
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r") as f:
+                    yaml_config = yaml.safe_load(f)
+                    if yaml_config and isinstance(yaml_config, dict):
+                        # 更新配置，保留YAML中的值
+                        if "llm" in yaml_config:
+                            llm_config = yaml_config["llm"]
+                            if "base_url" in llm_config:
+                                config["base_url"] = llm_config["base_url"]
+                            if "api_key" in llm_config:
+                                config["api_key"] = llm_config["api_key"]
+                            if "model" in llm_config:
+                                config["model"] = llm_config["model"]
+                        # 支持顶层配置
+                        else:
+                            if "base_url" in yaml_config:
+                                config["base_url"] = yaml_config["base_url"]
+                            if "api_key" in yaml_config:
+                                config["api_key"] = yaml_config["api_key"]
+                            if "model" in yaml_config:
+                                config["model"] = yaml_config["model"]
+                        
+                        logger.info(f"已从配置文件 {config_path} 加载配置")
+                        break
+            except Exception as e:
+                logger.warning(f"读取配置文件 {config_path} 出错: {e}")
+    
+    # 确保api_key不为空
+    if not config["api_key"]:
+        logger.warning("未找到API密钥，请在环境变量或配置文件中设置LLM_API_KEY或OPENAI_API_KEY")
+    
+    # 记录使用的配置（不包含密钥）
+    safe_config = config.copy()
+    if "api_key" in safe_config:
+        api_key = safe_config["api_key"]
+        if api_key and len(api_key) > 10:
+            safe_config["api_key"] = f"{api_key[:5]}...{api_key[-5:]}"
+        else:
+            safe_config["api_key"] = "[未设置]"
+    
+    logger.info(f"使用LLM配置: {safe_config}")
+    return config
+
+# endregion
 
 # region Plugin
 
@@ -71,71 +142,82 @@ class SemanticKernelTravelAgent:
     SUPPORTED_CONTENT_TYPES = ["text", "text/plain"]
 
     def __init__(self):
+        try:
+            # 加载配置
+            config = load_config()
+            
+            # 获取API密钥和模型ID
+            api_key = config["api_key"]
+            if not api_key:
+                raise ValueError("API密钥未设置。请在config.yaml或环境变量中设置。")
+            
+            model_id = config["model"]
+            base_url = config["base_url"]
 
-        api_key = os.getenv("OPENAI_API_KEY", None)
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY environment variable not set.")
-        
-        model_id = os.getenv("OPENAI_CHAT_MODEL_ID", "gpt-4.1")
+            # Define a CurrencyExchangeAgent to handle currency-related tasks
+            currency_exchange_agent = ChatCompletionAgent(
+                service=OpenAIChatCompletion(
+                    api_key=api_key,
+                    ai_model_id=model_id,
+                    base_url=base_url,
+                ),
+                name="CurrencyExchangeAgent",
+                instructions=(
+                    "You specialize in handling currency-related requests from travelers. "
+                    "This includes providing current exchange rates, converting amounts between different currencies, "
+                    "explaining fees or charges related to currency exchange, and giving advice on the best practices for exchanging currency. "
+                    "Your goal is to assist travelers promptly and accurately with all currency-related questions."
+                ),
+                plugins=[CurrencyPlugin()],
+            )
 
-        # Define a CurrencyExchangeAgent to handle currency-related tasks
-        currency_exchange_agent = ChatCompletionAgent(
-            service=OpenAIChatCompletion(
-                api_key=api_key,
-                ai_model_id=model_id,
-            ),
-            name="CurrencyExchangeAgent",
-            instructions=(
-                "You specialize in handling currency-related requests from travelers. "
-                "This includes providing current exchange rates, converting amounts between different currencies, "
-                "explaining fees or charges related to currency exchange, and giving advice on the best practices for exchanging currency. "
-                "Your goal is to assist travelers promptly and accurately with all currency-related questions."
-            ),
-            plugins=[CurrencyPlugin()],
-        )
+            # Define an ActivityPlannerAgent to handle activity-related tasks
+            activity_planner_agent = ChatCompletionAgent(
+                service=OpenAIChatCompletion(
+                    api_key=api_key,
+                    ai_model_id=model_id,
+                    base_url=base_url,
+                ),
+                name="ActivityPlannerAgent",
+                instructions=(
+                    "You specialize in planning and recommending activities for travelers. "
+                    "This includes suggesting sightseeing options, local events, dining recommendations, "
+                    "booking tickets for attractions, advising on travel itineraries, and ensuring activities "
+                    "align with traveler preferences and schedule. "
+                    "Your goal is to create enjoyable and personalized experiences for travelers."
+                ),
+            )
 
-        # Define an ActivityPlannerAgent to handle activity-related tasks
-        activity_planner_agent = ChatCompletionAgent(
-            service=OpenAIChatCompletion(
-                api_key=api_key,
-                ai_model_id=model_id,
-            ),
-            name="ActivityPlannerAgent",
-            instructions=(
-                "You specialize in planning and recommending activities for travelers. "
-                "This includes suggesting sightseeing options, local events, dining recommendations, "
-                "booking tickets for attractions, advising on travel itineraries, and ensuring activities "
-                "align with traveler preferences and schedule. "
-                "Your goal is to create enjoyable and personalized experiences for travelers."
-            ),
-        )
-
-        # Define the main TravelManagerAgent to delegate tasks to the appropriate agents
-        self.agent = ChatCompletionAgent(
-            service=OpenAIChatCompletion(
-                api_key=api_key,
-                ai_model_id=model_id,
-            ),
-            name="TravelManagerAgent",
-            instructions=(
-                "Your role is to carefully analyze the traveler's request and forward it to the appropriate agent based on the "
-                "specific details of the query. "
-                "Forward any requests involving monetary amounts, currency exchange rates, currency conversions, fees related "
-                "to currency exchange, financial transactions, or payment methods to the CurrencyExchangeAgent. "
-                "Forward requests related to planning activities, sightseeing recommendations, dining suggestions, event "
-                "booking, itinerary creation, or any experiential aspects of travel that do not explicitly involve monetary "
-                "transactions to the ActivityPlannerAgent. "
-                "Your primary goal is precise and efficient delegation to ensure travelers receive accurate and specialized "
-                "assistance promptly."
-            ),
-            plugins=[currency_exchange_agent, activity_planner_agent],
-            arguments=KernelArguments(
-                settings=OpenAIChatPromptExecutionSettings(
-                    response_format=ResponseFormat,
-                )
-            ),
-        )
-
+            # Define the main TravelManagerAgent to delegate tasks to the appropriate agents
+            self.agent = ChatCompletionAgent(
+                service=OpenAIChatCompletion(
+                    api_key=api_key,
+                    ai_model_id=model_id,
+                    base_url=base_url,
+                ),
+                name="TravelManagerAgent",
+                instructions=(
+                    "Your role is to carefully analyze the traveler's request and forward it to the appropriate agent based on the "
+                    "specific details of the query. "
+                    "Forward any requests involving monetary amounts, currency exchange rates, currency conversions, fees related "
+                    "to currency exchange, financial transactions, or payment methods to the CurrencyExchangeAgent. "
+                    "Forward requests related to planning activities, sightseeing recommendations, dining suggestions, event "
+                    "booking, itinerary creation, or any experiential aspects of travel that do not explicitly involve monetary "
+                    "transactions to the ActivityPlannerAgent. "
+                    "Your primary goal is precise and efficient delegation to ensure travelers receive accurate and specialized "
+                    "assistance promptly."
+                ),
+                plugins=[currency_exchange_agent, activity_planner_agent],
+                arguments=KernelArguments(
+                    settings=OpenAIChatPromptExecutionSettings(
+                        response_format=ResponseFormat,
+                    )
+                ),
+            )
+            logger.info("成功初始化Semantic Kernel Travel Agent")
+        except Exception as e:
+            logger.error(f"初始化Semantic Kernel Travel Agent时出错: {e}")
+            raise
 
     async def invoke(self, user_input: str, session_id: str) -> dict[str, Any]:
         """Handle synchronous tasks (like tasks/send).
@@ -149,7 +231,7 @@ class SemanticKernelTravelAgent:
         """
         await self._ensure_thread_exists(session_id)
 
-        # Use SK’s get_response for a single shot
+        # Use SK's get_response for a single shot
         response = await self.agent.get_response(
             messages=user_input,
             thread=self.thread,

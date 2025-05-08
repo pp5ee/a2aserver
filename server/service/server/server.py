@@ -4,6 +4,7 @@ import threading
 import os
 import uuid
 import logging
+import json
 from typing import Any, Optional
 from fastapi import APIRouter
 from fastapi import Request, Response
@@ -24,13 +25,13 @@ from service.types import (
     ListTaskResponse,
     RegisterAgentResponse,
     ListAgentResponse,
-    GetEventResponse
+    GetEventResponse,
+    ExtendedAgentCard
 )
 import secrets
 import re
 import dotenv
 import hashlib
-import json
 from fastapi import FastAPI, APIRouter, Request, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Awaitable, Callable, List, Optional, Tuple, Union, Dict
@@ -161,9 +162,24 @@ class ConversationServer:
     if not wallet_address:
       logger.warning("使用默认管理器处理请求")
       return self.default_manager
+    
+    # 更新用户活跃状态并启动订阅检查
+    self._update_user_activity(wallet_address)
       
     return self.user_session_manager.get_host_manager(wallet_address)
     
+  def _update_user_activity(self, wallet_address: str):
+    """更新用户活跃状态并启动订阅检查"""
+    if self.use_multi_user and wallet_address:
+      try:
+        # 更新用户活跃状态
+        self.user_session_manager.update_user_activity(wallet_address)
+        
+        # 启动订阅检查定时任务
+        self.user_session_manager.subscription_checker.start_subscription_checker(wallet_address)
+      except Exception as e:
+        logger.error(f"更新用户活跃状态时出错: {e}")
+
   def _run_cleanup_task(self):
     """定期运行清理任务"""
     import time
@@ -389,15 +405,101 @@ class ConversationServer:
   #   return RegisterAgentResponse()
 
   async def _list_agents(self, request: Request):
+    """获取用户的代理列表"""
     # 获取用户钱包地址
     wallet_address = self._get_wallet_address(request)
     
-    # 如果是多用户模式且有钱包地址，先刷新用户的代理列表
-    if self.use_multi_user and wallet_address:
-      self.user_session_manager.refresh_user_agents(wallet_address)
+    # 如果没有钱包地址，使用默认行为
+    if not wallet_address:
+        if not self.use_multi_user:
+            # 非多用户模式，返回默认管理器的代理
+            manager = self._get_user_manager(request)
+            return ListAgentResponse(result=manager.agents)
+        else:
+            # 多用户模式但没有钱包地址，返回空列表
+            logger.warning("获取代理列表时未提供钱包地址")
+            return ListAgentResponse(result=[])
     
-    manager = self._get_user_manager(request)
-    return ListAgentResponse(result=manager.agents)
+    # 如果是多用户模式，从数据库获取代理信息
+    if self.use_multi_user:
+        # 先刷新用户的代理列表
+        self.user_session_manager.refresh_user_agents(wallet_address)
+        
+        # 从数据库查询代理信息
+        agents = self.user_session_manager.queryAgentsByAddress(wallet_address)
+        
+        # 添加调试日志
+        print("从数据库获取的代理信息:")
+        print(f"代理数量: {len(agents)}")
+        for i, agent in enumerate(agents):
+            print(f"代理 {i+1}:")
+            print(f"  URL: {agent.get('url')}")
+            print(f"  在线状态: {agent.get('is_online')}")
+            print(f"  过期时间: {agent.get('expire_at')}")
+            print(f"  NFT Mint ID: {agent.get('nft_mint_id')}")
+        
+        # 返回格式化后的代理列表
+        result = []
+        for agent_info in agents:
+            # 创建一个ExtendedAgentCard对象
+            try:
+                # 处理特殊字段
+                capabilities = agent_info.get('capabilities', {
+                    'streaming': True,
+                    'pushNotifications': False,
+                    'stateTransitionHistory': False
+                })
+                
+                # 标准AgentCard字段
+                card_data = {
+                    'name': agent_info.get('name', f"Agent ({agent_info.get('url', 'Unknown')})"),
+                    'description': agent_info.get('description', ''),
+                    'url': agent_info.get('url', ''),
+                    'provider': agent_info.get('provider'),
+                    'version': agent_info.get('version', '1.0.0'),
+                    'documentationUrl': agent_info.get('documentationUrl'),
+                    'capabilities': capabilities,
+                    'authentication': agent_info.get('authentication'),
+                    'defaultInputModes': agent_info.get('defaultInputModes', ['text', 'text/plain']),
+                    'defaultOutputModes': agent_info.get('defaultOutputModes', ['text', 'text/plain']),
+                    'skills': agent_info.get('skills', []),
+                    
+                    # ExtendedAgentCard额外字段
+                    'is_online': agent_info.get('is_online', 'unknown'),
+                    'expire_at': agent_info.get('expire_at'),
+                    'nft_mint_id': agent_info.get('nft_mint_id')
+                }
+                
+                # 创建ExtendedAgentCard对象
+                extended_card = ExtendedAgentCard(**card_data)
+                result.append(extended_card)
+            except Exception as e:
+                logger.error(f"创建ExtendedAgentCard对象时出错: {e}")
+                # 如果创建对象失败，直接使用原始字典
+                result.append(agent_info)
+        
+        # 返回代理列表
+        response = ListAgentResponse(result=result)
+        
+        # 调试日志
+        print("返回的响应:")
+        print(f"代理数量: {len(response.result) if response.result else 0}")
+        for i, agent in enumerate(response.result or []):
+            print(f"代理 {i+1}:")
+            if hasattr(agent, 'model_dump'):
+                agent_dict = agent.model_dump()
+                print(f"  URL: {agent_dict.get('url')}")
+                print(f"  在线状态: {agent_dict.get('is_online')}")
+                print(f"  过期时间: {agent_dict.get('expire_at')}")
+                print(f"  NFT Mint ID: {agent_dict.get('nft_mint_id')}")
+            else:
+                print(f"  数据: {agent}")
+                
+        return response
+    else:
+        # 非多用户模式，使用默认行为
+        manager = self._get_user_manager(request)
+        return ListAgentResponse(result=manager.agents)
 
   async def _files(self, file_id: str, request: Request):
     if file_id not in self._file_cache:
