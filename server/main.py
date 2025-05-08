@@ -175,6 +175,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],  # 允许所有方法
     allow_headers=["*"],  # 允许所有请求头
+    expose_headers=["*"]  # 允许暴露所有响应头
 )
 
 # 添加中间件验证签名并记录请求头信息
@@ -358,11 +359,8 @@ async def get_agent_status(request: Request, wallet_address: Optional[str] = Non
     Returns:
         代理状态信息列表
     """
-    # 验证API密钥
-    if not await verify_api_key(request):
-        raise HTTPException(status_code=401, detail="未授权访问")
-    
     # 获取代理状态
+    from service.server.user_session_manager import UserSessionManager
     user_session_manager = UserSessionManager.get_instance()
     agent_status = user_session_manager.get_agent_status(wallet_address)
     

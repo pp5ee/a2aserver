@@ -139,6 +139,20 @@ components:
           items:
             type: string
           description: List of agent capabilities
+        is_online:
+          type: string
+          enum: [yes, no, unknown]
+          description: Online status of the agent
+        expire_at:
+          type: string
+          format: date-time
+          description: Expiration time for the agent subscription
+        nft_mint_id:
+          type: string
+          description: NFT mint ID associated with this agent
+        url:
+          type: string
+          description: URL of the agent
     
     Event:
       type: object
@@ -569,4 +583,34 @@ paths:
                   multi_user:
                     type: boolean
                   memory_mode:
-                    type: boolean 
+                    type: boolean
+                    
+  /api/agent/status:
+    get:
+      summary: Get agent status
+      description: Retrieves the status of agents for a specific wallet address
+      parameters:
+        - name: wallet_address
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Wallet address to get agent status for. If not provided, returns all agents.
+      responses:
+        '200':
+          description: Agent status information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AgentCard'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error' 
