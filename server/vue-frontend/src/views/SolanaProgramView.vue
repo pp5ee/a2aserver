@@ -139,7 +139,7 @@
                 </div>
                 <div class="nft-item">
                   <span class="label">Metadata:</span>
-                  <span class="value">{{ nft.metadataUrl.substring(0, 20) }}...</span>
+                  <span class="value trimmed" :title="nft.metadataUrl">{{ nft.metadataUrl }}</span>
                 </div>
                 <div class="nft-actions">
                   <button @click="checkSubscription(nft.mint)" class="check-sub-btn">
@@ -579,6 +579,20 @@ h1 {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  transition: max-width 0.3s ease;
+}
+
+.value.trimmed:hover {
+  max-width: 300px;
+  overflow: visible;
+  white-space: normal;
+  word-break: break-all;
+  position: relative;
+  z-index: 10;
+  background-color: #f8fafc;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+  padding: 2px 5px;
+  border-radius: 3px;
 }
 
 .input-group {
