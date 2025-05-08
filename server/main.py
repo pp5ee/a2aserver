@@ -172,7 +172,7 @@ except Exception as e:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # 允许所有来源，生产环境应该限制
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],  # 允许所有方法
     allow_headers=["*"],  # 允许所有请求头
     expose_headers=["*"]  # 允许暴露所有响应头
