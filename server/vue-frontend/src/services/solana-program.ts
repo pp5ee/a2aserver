@@ -489,19 +489,47 @@ export async function getUserSubscriptions() {
       
       if (subscriptions && subscriptions.length > 0) {
         // 将账户数据转换为前端可用的格式
-        const formattedSubscriptions = subscriptions.map(item => {
+        const formattedSubscriptionsPromises = subscriptions.map(async item => {
           const account = item.account as any;
           // 将链上的时间戳转换为可读格式
           const expiryTimestamp = account.expiresAt.toNumber() * 1000; // 转换为毫秒
           const expiryDate = new Date(expiryTimestamp);
           
+          // 获取Agent NFT的元数据URL
+          let agentUrl = null;
+          try {
+            // 查找AgentNft PDA
+            const agentNftMint = account.agentNftMint.toString();
+            const [agentNftPDA] = PublicKey.findProgramAddressSync(
+              [Buffer.from("agent-nft"), new PublicKey(agentNftMint).toBuffer()],
+              program.programId
+            );
+            
+            // 获取AgentNft账户
+            try {
+              const agentNftAccount = await program.account.agentNft.fetch(agentNftPDA);
+              if (agentNftAccount) {
+                agentUrl = (agentNftAccount as any).metadataUrl || null;
+                console.log(`找到Agent URL: ${agentUrl}`);
+              }
+            } catch (err) {
+              console.warn(`获取Agent NFT账户失败: ${err}`);
+            }
+          } catch (err) {
+            console.warn(`无法获取Agent URL: ${err}`);
+          }
+          
           return {
             address: item.publicKey.toString(),
             user: account.user.toString(),
             agentNftMint: account.agentNftMint.toString(),
-            expiresAt: expiryDate.toLocaleString()
+            expiresAt: expiryDate.toLocaleString(),
+            agentUrl: agentUrl  // 添加Agent URL
           };
         });
+        
+        // 等待所有Promise完成
+        const formattedSubscriptions = await Promise.all(formattedSubscriptionsPromises);
         
         return {
           success: true,
@@ -527,7 +555,8 @@ export async function getUserSubscriptions() {
             address: 'SubscriptionAddress111111111111111111111111111',
             user: wallet.toString(),
             agentNftMint: 'MintAddress1111111111111111111111111111111111',
-            expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toLocaleString() // 7天后过期
+            expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toLocaleString(), // 7天后过期
+            agentUrl: 'http://8.214.38.69:10003'  // 测试数据添加Agent URL
           }
         ]
       };

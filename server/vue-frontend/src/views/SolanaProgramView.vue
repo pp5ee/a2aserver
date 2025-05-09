@@ -160,15 +160,27 @@
               <div class="sub-content">
                 <div class="sub-item">
                   <span class="label">Address:</span>
-                  <span class="value trimmed">{{ sub.address }}</span>
+                  <span class="value trimmed" :title="sub.address">{{ sub.address }}</span>
                 </div>
                 <div class="sub-item">
                   <span class="label">Agent NFT:</span>
-                  <span class="value trimmed">{{ sub.agentNftMint }}</span>
+                  <span class="value trimmed" :title="sub.agentNftMint">{{ sub.agentNftMint }}</span>
                 </div>
                 <div class="sub-item">
                   <span class="label">Expires At:</span>
                   <span class="value">{{ sub.expiresAt }}</span>
+                </div>
+                <div v-if="sub.agentUrl" class="sub-item">
+                  <span class="label">Agent URL:</span>
+                  <span class="value url-value" :title="sub.agentUrl">{{ sub.agentUrl }}</span>
+                  <a :href="sub.agentUrl" target="_blank" class="agent-link">
+                    <i class="fa fa-external-link"></i> Open
+                  </a>
+                </div>
+                <div class="sub-actions">
+                  <button @click="checkSubscriptionDetails(sub.agentNftMint)" class="view-details-btn">
+                    View Details
+                  </button>
                 </div>
               </div>
             </div>
@@ -179,18 +191,18 @@
         <div v-if="singleSubscriptionResult" class="query-results single-sub-result">
           <h3>Subscription Check Result</h3>
           
-          <div v-if="singleSubscriptionResult.hasSubscription" class="sub-details">
+          <div v-if="singleSubscriptionResult.hasSubscription && singleSubscriptionResult.subscription" class="sub-details">
             <div class="sub-item">
               <span class="label">Status:</span>
               <span class="value status active">Active</span>
             </div>
             <div class="sub-item">
               <span class="label">Agent NFT:</span>
-              <span class="value trimmed">{{ singleSubscriptionResult.subscription.agentNftMint }}</span>
+              <span class="value trimmed">{{ singleSubscriptionResult.subscription?.agentNftMint }}</span>
             </div>
             <div class="sub-item">
               <span class="label">Expires At:</span>
-              <span class="value">{{ singleSubscriptionResult.subscription.expiresAt }}</span>
+              <span class="value">{{ singleSubscriptionResult.subscription?.expiresAt }}</span>
             </div>
           </div>
           
@@ -240,6 +252,7 @@ interface Subscription {
   user: string;
   agentNftMint: string;
   expiresAt: string;
+  agentUrl?: string;
 }
 
 interface MintResult {
@@ -462,6 +475,11 @@ export default defineComponent({
       }
     };
     
+    // 查看订阅详情
+    const checkSubscriptionDetails = async (nftMint: string) => {
+      return checkSubscription(nftMint);
+    };
+    
     // 设置订阅NFT Mint
     const setSubscriptionNftMint = (mint: string) => {
       subscriptionNftMint.value = mint;
@@ -503,6 +521,7 @@ export default defineComponent({
       fetchAllNFTs,
       fetchUserSubscriptions,
       checkSubscription,
+      checkSubscriptionDetails,
       setSubscriptionNftMint,
       isValidMetadataUrl
     };
@@ -792,5 +811,89 @@ button:disabled {
   .nft-grid, .sub-list {
     grid-template-columns: 1fr;
   }
+}
+
+.sub-card {
+  background-color: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 1.25rem;
+  margin-bottom: 1rem;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.sub-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
+}
+
+.sub-header {
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: #344767;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 0.5rem;
+}
+
+.sub-content {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+}
+
+.sub-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.sub-item .label {
+  font-size: 0.875rem;
+  color: #64748b;
+  margin-bottom: 0.25rem;
+}
+
+.sub-item .value {
+  font-family: 'Roboto Mono', monospace;
+  word-break: break-all;
+}
+
+.sub-item .url-value {
+  color: #3b82f6;
+  word-break: break-all;
+  margin-bottom: 0.25rem;
+}
+
+.agent-link {
+  display: inline-flex;
+  align-items: center;
+  color: #3b82f6;
+  font-size: 0.875rem;
+  text-decoration: none;
+  margin-top: 0.25rem;
+}
+
+.agent-link:hover {
+  text-decoration: underline;
+}
+
+.sub-actions {
+  margin-top: 1rem;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.view-details-btn {
+  background-color: #f1f5f9;
+  color: #334155;
+  border: 1px solid #e2e8f0;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  transition: all 0.2s;
+}
+
+.view-details-btn:hover {
+  background-color: #e2e8f0;
 }
 </style> 
