@@ -164,7 +164,7 @@ def print_response_structure(response, prefix=""):
 
 async def get_user_subscriptions(wallet_address: str) -> List[Dict[str, Any]]:
     """
-    从Solana区块链获取用户的NFT订阅状态
+    从Solana区块链获取用户的NFT订阅状态，使用Anchor方式
     
     Args:
         wallet_address: 用户的钱包地址
@@ -187,260 +187,221 @@ async def get_user_subscriptions(wallet_address: str) -> List[Dict[str, Any]]:
             import base58
             import json
             import base64
-            
-            # 尝试导入可能需要的类型
-            try:
-                from solana.rpc.types import MemcmpOpts
-                has_memcmp_opts = True
-            except ImportError:
-                has_memcmp_opts = False
-                
-            try:
-                from solana.rpc.core import Memcmp
-                has_memcmp = True
-            except ImportError:
-                has_memcmp = False
+            from solana.rpc.types import MemcmpOpts
+            import os
         except ImportError as e:
             logger.error(f"导入模块失败: {e}")
             return []
         
-        # 初始化Solana连接
+        # 加载IDL文件
         try:
-            DEVNET_URL = 'https://api.devnet.solana.com'
-            connection = Client(DEVNET_URL)
+            # 获取当前文件路径
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            idl_path = os.path.join(current_dir, 'anchor', 'agent_nft_market.json')
+            
+            with open(idl_path, 'r') as f:
+                idl = json.load(f)
+                
+            # 检查IDL是否包含必要信息
+            if 'address' not in idl:
+                logger.error("IDL文件缺少程序地址")
+                return []
+                
+            # 从IDL获取程序ID
+            PROGRAM_ID = PublicKey.from_string(idl['address'])
+            logger.info(f"从IDL加载程序ID: {PROGRAM_ID}")
+        except Exception as e:
+            logger.error(f"加载IDL文件失败: {e}")
+            # 使用默认的程序ID
+            PROGRAM_ID = PublicKey.from_string('3Qqf9EXWLDhr9bzxdgUk6UQbDYuynAS5WKT5ygpYpQfQ')
+            logger.info(f"使用默认程序ID: {PROGRAM_ID}")
+        
+        # 连接到Solana网络
+        try:
+            # 使用Devnet进行开发测试
+            SOLANA_URL = 'https://api.devnet.solana.com'
+            connection = Client(SOLANA_URL)
+            logger.debug(f"已连接到Solana节点: {SOLANA_URL}")
         except Exception as e:
             logger.error(f"连接Solana节点失败: {e}")
-            return []
-        
-        # 程序ID
-        try:
-            PROGRAM_ID = PublicKey.from_string('3Qqf9EXWLDhr9bzxdgUk6UQbDYuynAS5WKT5ygpYpQfQ')
-        except Exception as e:
-            logger.error(f"创建程序ID失败: {e}")
             return []
         
         # 将钱包地址转换为PublicKey
         try:
             user_pubkey = PublicKey.from_string(wallet_address)
-            
-            # 将用户公钥转换为base58编码
-            user_pubkey_base58 = base58.b58encode(bytes(user_pubkey)).decode('utf-8')
         except Exception as e:
             logger.error(f"转换钱包地址失败: {e}")
             return []
         
-        # 使用直接RPC调用获取用户订阅账户
+        # 使用与NodeJS测试相同的方法获取用户的所有订阅
+        # 1. 查询所有匹配Subscription类型且用户是指定钱包的账户
         try:
-            # 获取get_program_accounts方法的参数
-            import inspect
-            sig = inspect.signature(connection.get_program_accounts)
-            param_names = [p for p in sig.parameters]
+            # 订阅判别器 - 与IDL中一致
+            subscription_discriminator = bytes.fromhex("40071a8766846221")
             
-            # 直接使用最基本的方式调用
-            # 不使用复杂的过滤器参数，而是直接使用低级API
-            try:
-                # 构建RPC请求参数
-                rpc_params = {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "getProgramAccounts",
-                    "params": [
-                        str(PROGRAM_ID),
-                        {
-                            "encoding": "base64",
-                            "filters": [
-                                {
-                                    "memcmp": {
-                                        "offset": 0,  # 账户判别器
-                                        "bytes": "Bi9fTyJ7Nxx",  # Subscription账户判别器的base58编码
-                                        "encoding": "base58"
-                                    }
-                                },
-                                {
-                                    "memcmp": {
-                                        "offset": 8,  # 用户公钥
-                                        "bytes": user_pubkey_base58
-                                    }
-                                }
-                            ]
-                        }
-                    ]
-                }
-                
-                # 直接使用底层HTTP请求
-                import requests
-                logger.debug(f"发送直接RPC请求到 {DEVNET_URL}")
-                
-                response = requests.post(DEVNET_URL, json=rpc_params)
-                
-                if response.status_code != 200:
-                    logger.error(f"RPC请求失败: {response.text}")
-                    return []
-                
-                # 解析响应
-                result = response.json()
-                
-                if "result" not in result:
-                    logger.warning("RPC响应中没有result字段")
-                    return []
-                
-                accounts = result["result"]
-                
-                if not accounts:
-                    logger.info("未找到任何账户")
-                    return []
-                    
-                logger.info(f"找到 {len(accounts)} 个账户")
-                
-                # 解析账户数据
-                subscriptions = []
-                now = datetime.datetime.now()
-                
-                for account in accounts:
-                    try:
-                        # 检查账户数据格式
-                        if "account" not in account or "pubkey" not in account:
-                            logger.warning(f"账户格式不正确: {account}")
-                            continue
-                            
-                        # 获取账户数据
-                        account_info = account["account"]
-                        pubkey = account["pubkey"]
-                        
-                        if "data" not in account_info:
-                            logger.warning(f"账户信息格式不正确: {account_info}")
-                            continue
-                            
-                        # 解析Base64编码的数据
-                        data = account_info["data"]
-                        
-                        if not isinstance(data, list) or len(data) < 1:
-                            logger.warning(f"数据格式不正确: {data}")
-                            continue
-                            
-                        # 解码Base64数据
-                        account_data = base64.b64decode(data[0])
-                        
-                        # 从账户数据中提取信息
-                        if len(account_data) < 80:  # 确保数据长度足够
-                            logger.warning(f"账户数据长度不足: {len(account_data)}")
-                            continue
-                            
-                        # 提取必要的数据
-                        user_data = account_data[8:40]
-                        nft_mint_data = account_data[40:72]
-                        user = str(PublicKey(user_data))
-                        nft_mint_id = str(PublicKey(nft_mint_data))
-                        try:
-                            # 检查账户判别器，不同类型的账户可能有不同的数据结构
-                            account_discriminator = account_data[0:8].hex()
-                            
-                            # 根据账户判别器类型选择不同的解析方式
-                            # 40071a8766846221 是Subscription账户的判别器
-                            if account_discriminator == "40071a8766846221":
-                                # 这是正确的Subscription账户，使用小端序解析时间戳
-                                expires_at_seconds = int.from_bytes(account_data[72:80], byteorder='little')
-                                
-                                # 创建datetime对象
-                                expire_at = datetime.datetime.fromtimestamp(expires_at_seconds)
-                            else:
-                                # 不是有效的Subscription账户，记录错误并跳过
-                                logger.warning(f"无效的账户判别器: {account_discriminator}，预期: 40071a8766846221")
-                                continue
-                        except Exception as e:
-                            logger.error(f"解析时间戳出错: {e}")
-                            continue  # 跳过此订阅
-                        
-                        # 获取NFT的元数据URL
-                        try:
-                            # 计算AgentNft PDA - 使用另一种方式
-                            try:
-                                # 使用直接的RPC调用获取AgentNft账户
-                                # 构建查询参数
-                                rpc_params = {
-                                    "jsonrpc": "2.0",
-                                    "id": 1,
-                                    "method": "getProgramAccounts",
-                                    "params": [
-                                        str(PROGRAM_ID),
-                                        {
-                                            "encoding": "base64",
-                                            "filters": [
-                                                {
-                                                    "memcmp": {
-                                                        "offset": 40,  # 跳过判别器(8字节)和owner(32字节)
-                                                        "bytes": nft_mint_id
-                                                    }
-                                                }
-                                            ]
-                                        }
-                                    ]
-                                }
-                                
-                                # 发送请求
-                                agent_response = requests.post(DEVNET_URL, json=rpc_params)
-                                
-                                if agent_response.status_code != 200:
-                                    logger.error(f"获取AgentNft账户失败: {agent_response.text}")
-                                    raw_agent_url = "http://default-agent-url.com"
-                                else:
-                                    # 解析响应
-                                    agent_result = agent_response.json()
-                                    
-                                    if "result" not in agent_result or not agent_result["result"]:
-                                        logger.warning("未找到AgentNft账户")
-                                        raw_agent_url = "http://default-agent-url.com"
-                                    else:
-                                        # 获取第一个匹配的账户
-                                        agent_account = agent_result["result"][0]
-                                        agent_nft_pda = agent_account["pubkey"]
-                                        
-                                        # 获取元数据URL
-                                        raw_agent_url = await get_nft_metadata_url_direct(DEVNET_URL, agent_nft_pda)
-                            except Exception as pda_error:
-                                logger.error(f"计算PDA失败: {pda_error}")
-                                raw_agent_url = "http://default-agent-url.com"
-                            
-                            # 验证并处理元数据URL
-                            agent_url = validate_and_process_metadata_url(raw_agent_url)
-                        except Exception as url_error:
-                            logger.error(f"获取元数据URL失败: {url_error}")
-                            agent_url = "http://default-agent-url.com"
-                        
-                        # 检查订阅是否过期
-                        if expire_at > now:
-                            subscriptions.append({
-                                'nft_mint_id': nft_mint_id,
-                                'agent_url': agent_url,
-                                'expire_at': expire_at
-                            })
-                            logger.info(f"添加有效订阅: mint={nft_mint_id}, url={agent_url}")
-                        else:
-                            logger.debug(f"跳过已过期订阅: mint={nft_mint_id}, 过期时间={expire_at}")
-                    except Exception as e:
-                        logger.error(f"解析账户数据时出错: {e}")
-                        import traceback
-                        logger.error(f"错误详情: {traceback.format_exc()}")
-                        continue
-                
-                logger.info(f"获取到用户 {wallet_address} 的 {len(subscriptions)} 个有效NFT订阅")
-                return subscriptions
-                
-            except Exception as direct_rpc_error:
-                logger.error(f"直接RPC调用失败: {direct_rpc_error}")
-                import traceback
-                logger.error(f"错误详情: {traceback.format_exc()}")
+            # 创建过滤器 - 查找与用户相关的Subscription账户
+            filters = [
+                # 按Subscription类型过滤（8字节判别器）
+                MemcmpOpts(
+                    offset=0,  # 账户判别器位置
+                    bytes=base58.b58encode(subscription_discriminator).decode('utf-8')
+                ),
+                # 按用户公钥过滤
+                MemcmpOpts(
+                    offset=8,  # 用户公钥在账户中的位置（跳过判别器8字节）
+                    bytes=str(user_pubkey)
+                )
+            ]
+            
+            # 获取用户的订阅账户
+            logger.debug(f"查询用户 {wallet_address} 的订阅账户...")
+            response = connection.get_program_accounts(
+                PROGRAM_ID,
+                encoding="base64",
+                filters=filters
+            )
+            
+            # 检查响应
+            if not response.value:
+                logger.info(f"用户 {wallet_address} 没有订阅账户")
                 return []
-                
+            
+            logger.info(f"找到 {len(response.value)} 个订阅账户")
+            
+            # 处理每个订阅账户
+            subscriptions = []
+            now = datetime.datetime.now()
+            
+            for account in response.value:
+                try:
+                    # 获取账户数据并解码
+                    account_data = account.account.data
+                    
+                    # 跳过判别器(8字节)
+                    # 订阅结构: discriminator(8) + user(32) + agent_nft_mint(32) + expires_at(8)
+                    
+                    # 提取用户公钥和NFT mint ID
+                    user_data = account_data[8:40]  # 用户公钥 (32字节)
+                    nft_mint_data = account_data[40:72]  # NFT mint ID (32字节)
+                    
+                    user_address = str(PublicKey.from_bytes(user_data))
+                    nft_mint_id = str(PublicKey.from_bytes(nft_mint_data))
+                    
+                    # 提取过期时间 (8字节，小端序整数)
+                    expires_at_seconds = int.from_bytes(account_data[72:80], byteorder='little')
+                    expire_at = datetime.datetime.fromtimestamp(expires_at_seconds)
+                    
+                    # 检查用户地址是否匹配（额外验证）
+                    if user_address != wallet_address:
+                        logger.warning(f"账户数据中的用户地址不匹配：{user_address} != {wallet_address}")
+                        continue
+                    
+                    logger.debug(f"找到订阅: NFT={nft_mint_id}, 过期时间={expire_at}")
+                    
+                    # 2. 获取对应的AgentNft账户信息
+                    # 计算AgentNft PDA地址
+                    # "agent-nft" + nft_mint
+                    agent_nft_seed = b"agent-nft"
+                    nft_mint_pubkey = PublicKey.from_string(nft_mint_id)
+                    
+                    # 使用与NodeJS测试相同的方法查找PDA
+                    agent_nft_pda = None
+                    bump = 255
+                    
+                    # 寻找正确的PDA
+                    while bump >= 0:
+                        try:
+                            # 从PublicKey.find_program_address重新实现逻辑
+                            seed_bytes = bytearray(agent_nft_seed)
+                            seed_bytes.extend(bytes(nft_mint_pubkey))
+                            seed_bytes.append(bump)
+                            
+                            # 计算PDA
+                            address = PublicKey.create_program_address(
+                                seeds=[bytes(seed_bytes)],
+                                program_id=PROGRAM_ID
+                            )
+                            
+                            agent_nft_pda = address
+                            logger.debug(f"找到AgentNft PDA: {agent_nft_pda}")
+                            break
+                        except Exception:
+                            bump -= 1
+                    
+                    # 3. 获取AgentNft账户数据
+                    agent_url = "unknown"  # 默认值
+                    
+                    if agent_nft_pda:
+                        try:
+                            # 获取账户信息
+                            agent_nft_account = connection.get_account_info(agent_nft_pda)
+                            
+                            if agent_nft_account.value:
+                                agent_data = agent_nft_account.value.data
+                                
+                                # AgentNft结构: discriminator(8) + owner(32) + mint(32) + metadataUrl(string)
+                                # string结构: length(4) + content(variable)
+                                
+                                # 提取URL字符串长度
+                                if len(agent_data) >= 76:  # 至少有8+32+32+4字节
+                                    str_len = int.from_bytes(agent_data[72:76], byteorder='little')
+                                    
+                                    if 0 < str_len < 1000 and 76 + str_len <= len(agent_data):
+                                        url_bytes = agent_data[76:76+str_len]
+                                        try:
+                                            agent_url = url_bytes.decode('utf-8')
+                                            
+                                            # 处理URL，确保格式正确
+                                            if agent_url and not agent_url.startswith(('http://', 'https://')):
+                                                agent_url = 'http://' + agent_url
+                                                
+                                            # 去除可能存在的@前缀
+                                            if agent_url.startswith('@http://'):
+                                                agent_url = agent_url[1:]
+                                                
+                                            logger.debug(f"提取到的代理URL: {agent_url}")
+                                        except Exception as e:
+                                            logger.error(f"解码URL时出错: {e}")
+                                            # 使用默认值
+                                            agent_url = "unknown"
+                                    else:
+                                        logger.warning(f"无效的URL长度: {str_len}")
+                            else:
+                                logger.warning(f"未找到AgentNft账户: {agent_nft_pda}")
+                        except Exception as e:
+                            logger.error(f"获取AgentNft账户信息出错: {e}")
+                    
+                    # 检查订阅是否过期
+                    if expire_at > now:
+                        # 订阅有效，添加到列表
+                        subscriptions.append({
+                            'nft_mint_id': nft_mint_id,
+                            'agent_url': agent_url,
+                            'expire_at': expire_at
+                        })
+                        logger.info(f"添加有效订阅: mint={nft_mint_id}, url={agent_url}, 过期时间={expire_at}")
+                    else:
+                        logger.debug(f"跳过已过期订阅: mint={nft_mint_id}, 过期时间={expire_at}")
+                        
+                except Exception as e:
+                    logger.error(f"处理订阅账户数据时出错: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    continue
+            
+            logger.info(f"获取到用户 {wallet_address} 的 {len(subscriptions)} 个有效NFT订阅")
+            return subscriptions
+            
         except Exception as e:
-            logger.error(f"获取程序账户时出错: {e}")
-            # 打印更详细的错误信息
+            logger.error(f"查询程序账户时出错: {e}")
             import traceback
-            logger.error(f"错误详情: {traceback.format_exc()}")
+            logger.error(traceback.format_exc())
             return []
             
     except Exception as e:
-        logger.error(f"获取用户 {wallet_address} 的NFT订阅状态时出错: {e}")
+        logger.error(f"获取用户 {wallet_address} 的NFT订阅时出错: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return []
 
 async def get_nft_metadata_url_direct(rpc_url: str, agent_nft_pda: str) -> str:

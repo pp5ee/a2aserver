@@ -183,8 +183,8 @@ export const apiService = {
   },
   
   // 任务相关
-  async listTasks() {
-    return api.post('/task/list', {});
+  async listTasks(conversationId?: string) {
+    return api.post('/task/list', conversationId ? { conversation_id: conversationId } : {});
   },
   
   // 代理相关

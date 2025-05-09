@@ -1224,8 +1224,16 @@ class UserSessionManager:
         except Exception as err:
             logger.error(f"保存任务记录时出错: {err}")
     
-    def get_conversation_tasks(self, conversation_id: str) -> list:
-        """获取会话的任务列表"""
+    def get_conversation_tasks(self, conversation_id: str, wallet_address: str = None) -> list:
+        """获取会话的任务列表
+        
+        Args:
+            conversation_id: 会话ID
+            wallet_address: 钱包地址，如果提供则确保任务属于该用户
+            
+        Returns:
+            list: 任务列表
+        """
         if not conversation_id:
             return []
             
@@ -1240,13 +1248,30 @@ class UserSessionManager:
             self._db_connection.ping(reconnect=True)
             cursor = self._db_connection.cursor()
             
-            # 查询会话的任务
-            cursor.execute("""
-            SELECT task_id, session_id, state, data, created_at, updated_at 
-            FROM tasks 
-            WHERE conversation_id = %s 
-            ORDER BY updated_at DESC
-            """, (conversation_id,))
+            # 构建查询条件
+            query = """
+            SELECT t.task_id, t.session_id, t.state, t.data, t.created_at, t.updated_at 
+            FROM tasks t
+            """
+            
+            params = []
+            
+            # 如果有wallet_address，通过会话表关联确保任务属于该用户
+            if wallet_address:
+                query += """
+                JOIN conversations c ON t.conversation_id = c.conversation_id 
+                WHERE t.conversation_id = %s AND c.wallet_address = %s
+                """
+                params = [conversation_id, wallet_address]
+            else:
+                # 如果没有wallet_address，只按conversation_id过滤
+                query += "WHERE t.conversation_id = %s"
+                params = [conversation_id]
+                
+            query += " ORDER BY t.updated_at DESC"
+            
+            # 执行查询
+            cursor.execute(query, params)
             
             tasks = []
             for row in cursor.fetchall():
@@ -1270,7 +1295,7 @@ class UserSessionManager:
         except Exception as err:
             logger.error(f"获取会话任务时出错: {err}")
             return []
-    
+
     def delete_task(self, task_id: str) -> bool:
         """删除任务记录"""
         if not task_id:

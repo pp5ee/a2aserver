@@ -485,33 +485,61 @@ class ConversationServer:
   async def _list_tasks(self, request: Request):
     manager = self._get_user_manager(request)
     
+    # 获取请求参数
+    try:
+      message_data = await request.json()
+      # 尝试获取conversation_id参数
+      conversation_id = message_data.get('conversation_id', None)
+    except:
+      # 如果无法解析JSON或没有参数，默认为None
+      conversation_id = None
+    
     # 获取用户钱包地址
     wallet_address = self._get_wallet_address(request)
     
     # 现有逻辑：从内存中获取任务
     memory_tasks = manager.tasks
     
+    # 如果指定了conversation_id，过滤内存中的任务
+    if conversation_id:
+      memory_tasks = [task for task in memory_tasks if 
+                     hasattr(task, 'sessionId') and task.sessionId == conversation_id]
+    
     # 如果是多用户模式且有钱包地址，尝试从数据库获取更多任务信息
     if self.use_multi_user and wallet_address:
       try:
-        # 获取用户的所有会话
+        # 获取用户会话管理器
         user_session_manager = UserSessionManager.get_instance()
-        conversations = user_session_manager.get_user_conversations(wallet_address)
         
         # 如果数据库中有会话但运行在内存模式，仅返回内存中的任务
         if user_session_manager._memory_mode:
           return ListTaskResponse(result=memory_tasks)
         
-        # 逐个会话获取任务
+        # 查询任务
         db_tasks = []
-        for conv in conversations:
-          # 获取会话ID
-          conversation_id = conv.conversation_id if hasattr(conv, 'conversation_id') else conv.get('conversation_id')
-          if conversation_id:
-            # 获取会话相关的任务
-            tasks = user_session_manager.get_conversation_tasks(conversation_id)
-            if tasks:
-              db_tasks.extend(tasks)
+        
+        if conversation_id:
+          # 如果指定了conversation_id，只查询该会话的任务
+          tasks = user_session_manager.get_conversation_tasks(
+            conversation_id=conversation_id,
+            wallet_address=wallet_address
+          )
+          if tasks:
+            db_tasks.extend(tasks)
+        else:
+          # 否则查询所有会话的任务
+          conversations = user_session_manager.get_user_conversations(wallet_address)
+          for conv in conversations:
+            # 获取会话ID
+            conv_id = conv.conversation_id if hasattr(conv, 'conversation_id') else conv.get('conversation_id')
+            if conv_id:
+              # 获取会话相关的任务
+              tasks = user_session_manager.get_conversation_tasks(
+                conversation_id=conv_id,
+                wallet_address=wallet_address
+              )
+              if tasks:
+                db_tasks.extend(tasks)
         
         # 合并内存中的任务和数据库中的任务，确保没有重复
         if db_tasks:

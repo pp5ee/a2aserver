@@ -252,8 +252,8 @@ export default createStore<RootState>({
           await dispatch('fetchMessages');
         }
         
-        // 获取任务列表
-        const taskResponse = await apiService.listTasks();
+        // 获取任务列表 - 使用当前对话ID
+        const taskResponse = await apiService.listTasks(state.currentConversationId);
         if (taskResponse.data && taskResponse.data.result) {
           const tasks = taskResponse.data.result.map((task: any) => ({
             sessionId: task.sessionId,
