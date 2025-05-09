@@ -331,6 +331,17 @@ def task_page():
 
 # Setup the server global objects
 app = FastAPI()
+
+# 添加CORS中间件以支持跨域请求 - 必须最先添加
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 允许所有来源，生产环境应该限制
+    allow_credentials=True,
+    allow_methods=["*"],  # 允许所有方法
+    allow_headers=["*"],  # 允许所有请求头
+    expose_headers=["*"]  # 允许暴露所有响应头
+)
+
 router = APIRouter()
 agent_server = ConversationServer(router)
 app.include_router(router)
@@ -348,16 +359,6 @@ except ImportError:
     logger.warning("pyyaml library not installed, cannot load API documentation. install: pip install pyyaml")
 except Exception as e:
     logger.warning(f"API文档配置失败: {str(e)}")
-
-# 添加CORS中间件以支持跨域请求
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # 允许所有来源，生产环境应该限制
-    allow_credentials=True,
-    allow_methods=["*"],  # 允许所有方法
-    allow_headers=["*"],  # 允许所有请求头
-    expose_headers=["*"]  # 允许暴露所有响应头
-)
 
 # 添加速率限制中间件
 @app.middleware("http")
