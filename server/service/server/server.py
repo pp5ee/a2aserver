@@ -263,6 +263,34 @@ class ConversationServer:
         conversation_id=conversation_id,
         max_messages=10  # 保留最新的10条消息
       )
+      
+      # 如果当前存在任务，将消息添加到任务历史记录
+      for task in manager.tasks:
+        if task.sessionId == conversation_id:
+          # 将用户消息添加到任务历史记录
+          if not hasattr(task, 'history') or task.history is None:
+            from common.types import Message as TaskMessage
+            task.history = []
+          
+          # 检查消息是否已存在于历史记录中
+          message_id = message.metadata.get('message_id')
+          if message_id:
+            existing_ids = [
+              m.metadata.get('message_id') 
+              for m in task.history 
+              if m.metadata and 'message_id' in m.metadata
+            ]
+            if message_id in existing_ids:
+              print(f"消息 {message_id} 已存在于任务 {task.id} 的历史记录中，跳过添加")
+              break
+          
+          # 添加消息到任务历史
+          task.history.append(message)
+          print(f"已将用户消息 {message_id} 添加到任务 {task.id} 的历史记录中")
+          
+          # 保存更新后的任务
+          self.user_session_manager.save_task(wallet_address, task)
+          break
     
     # 改进的异步任务处理，增强稳定性和错误恢复能力
     async def process_message_with_timeout():
@@ -561,6 +589,42 @@ class ConversationServer:
                 )
                 
                 task = Task(id=db_task['id'], sessionId=db_task['sessionId'], status=status)
+                
+                # 处理任务的历史消息
+                if 'data' in db_task and 'history' in db_task['data']:
+                  try:
+                    from common.types import Message
+                    history_messages = []
+                    
+                    for history_item in db_task['data']['history']:
+                      # 创建消息部分
+                      message_parts = []
+                      for part in history_item.get('parts', []):
+                        if isinstance(part, dict) and 'type' in part:
+                          if part['type'] == 'text' and 'text' in part:
+                            message_parts.append(TextPart(text=part['text']))
+                          elif part['type'] == 'data' and 'data' in part:
+                            message_parts.append(DataPart(data=part['data']))
+                          elif part['type'] == 'file' and 'file' in part:
+                            file_content = FileContent(**part['file'])
+                            message_parts.append(FilePart(file=file_content))
+                        else:
+                          # 默认处理为文本
+                          text_content = part.get('content', str(part))
+                          message_parts.append(TextPart(text=text_content))
+                      
+                      # 创建消息对象
+                      message = Message(
+                        role=history_item.get('role', 'user'),
+                        parts=message_parts,
+                        metadata=history_item.get('metadata', {})
+                      )
+                      history_messages.append(message)
+                    
+                    # 设置任务的历史消息
+                    task.history = history_messages
+                  except Exception as e:
+                    print(f"处理任务历史消息时出错: {e}")
                 
                 # 添加到结果列表
                 memory_tasks.append(task)

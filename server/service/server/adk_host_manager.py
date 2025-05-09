@@ -280,6 +280,28 @@ class ADKHostManager(ApplicationManager):
                 message=response
               )
               print(f"已保存代理响应到数据库，消息ID: {new_message_id}")
+              
+              # 如果有相关任务，将响应添加到任务历史记录
+              for task in self._tasks:
+                if task.sessionId == conversation_id:
+                  # 确保任务有历史消息字段
+                  if not hasattr(task, 'history') or task.history is None:
+                    task.history = []
+                  
+                  # 检查消息是否已存在于历史记录中
+                  message_id = new_message_id
+                  existing_ids = [get_message_id(m) for m in task.history if get_message_id(m) is not None]
+                  if message_id in existing_ids:
+                    print(f"消息 {message_id} 已存在于任务 {task.id} 的历史记录中，跳过添加")
+                    break
+                  
+                  # 添加代理响应到任务历史
+                  task.history.append(response)
+                  print(f"已将代理响应消息 {message_id} 添加到任务 {task.id} 的历史记录中")
+                  
+                  # 保存更新后的任务
+                  self._save_task_to_db(task)
+                  break
           except Exception as e:
             print(f"保存代理响应到数据库时出错: {e}")
     
@@ -354,11 +376,15 @@ class ADKHostManager(ApplicationManager):
       current_task = self.add_or_get_task(task)
       current_task.status = task.status
       self.attach_message_to_task(task.status.message, current_task.id)
-      self.insert_message_history(current_task, task.status.message)
+      
+      # 检查消息是否存在并且有效，然后添加到历史记录
+      if task.status and task.status.message:
+        self.insert_message_history(current_task, task.status.message)
+      
       self.update_task(current_task)
       self.insert_id_trace(task.status.message)
       
-      # 尝试保存任务到数据库 - 新增代码
+      # 尝试保存任务到数据库
       self._save_task_to_db(current_task)
       
       return current_task
@@ -399,22 +425,20 @@ class ADKHostManager(ApplicationManager):
       if task.status and task.status.message and task.status.message.metadata:
         wallet_address = task.status.message.metadata.get('wallet_address')
       
-      # 如果没有在状态消息中找到，尝试从历史消息中查找
+      # 如果没有在状态消息中找到，尝试在任务历史中查找
       if not wallet_address and task.history:
         for message in task.history:
-          if message and message.metadata and 'wallet_address' in message.metadata:
-            wallet_address = message.metadata['wallet_address']
+          if message.metadata and 'wallet_address' in message.metadata:
+            wallet_address = message.metadata.get('wallet_address')
             break
       
-      # 如果有钱包地址，则保存任务
+      # 如果找到了钱包地址，保存任务到数据库
       if wallet_address:
         from service.server.user_session_manager import UserSessionManager
         UserSessionManager.get_instance().save_task(wallet_address, task)
-      
+        print(f"已保存任务 {task.id} 到数据库")
     except Exception as e:
-      # 错误处理不应该影响现有流程
       print(f"保存任务到数据库时出错: {e}")
-      # 这里不抛出异常，确保原有业务逻辑不受影响
 
   def emit_event(self, task: TaskCallbackArg, agent_card: AgentCard):
     """Emit an event for agent actions."""
@@ -551,19 +575,30 @@ class ADKHostManager(ApplicationManager):
       self._next_id[last_message_id] = message_id
 
   def insert_message_history(self, task: Task, message: Message | None):
-    if not message:
+    """将消息添加到任务的历史记录中"""
+    if message is None:
       return
+      
     if task.history is None:
       task.history = []
+    
+    # 检查是否已存在相同消息ID的历史记录
     message_id = get_message_id(message)
     if not message_id:
       return
-    if get_message_id(task.status.message) not in [
-        get_message_id(x) for x in task.history
-    ]:
-      task.history.append(task.status.message)
-    else:
-      print("Message id already in history", get_message_id(task.status.message), task.history)
+      
+    # 检查是否已存在相同ID的消息，使用精确比较
+    existing_ids = [get_message_id(m) for m in task.history if get_message_id(m) is not None]
+    if message_id in existing_ids:
+      print(f"消息 {message_id} 已存在于任务历史中，跳过添加")
+      return
+    
+    # 添加消息到历史记录
+    task.history.append(message)
+    print(f"已将消息 {message_id} 添加到任务 {task.id} 的历史记录中")
+    
+    # 尝试保存任务到数据库
+    self._save_task_to_db(task)
 
   def add_or_get_task(self, task: TaskCallbackArg):
     current_task = next(filter(lambda x: x.id == task.id, self._tasks), None)

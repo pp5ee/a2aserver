@@ -282,7 +282,20 @@ export default createStore<RootState>({
                             part.type === 'file' ? part.file.mimeType : 
                             'application/json'
                 }))
-              ))
+              )),
+              history: (task.history || []).map((message: any) => ({
+                messageId: message.metadata?.message_id || '',
+                role: message.role || '',
+                content: (message.parts || []).map((part: any) => ({
+                  content: part.type === 'text' ? part.text : 
+                          part.type === 'file' ? part.file.uri || part.file.bytes : 
+                          part.type === 'data' ? part.data : '',
+                  mediaType: part.type === 'text' ? 'text/plain' : 
+                            part.type === 'file' ? part.file.mimeType : 
+                            'application/json'
+                })),
+                metadata: message.metadata || null
+              }))
             }
           }));
           commit('setTaskList', tasks);

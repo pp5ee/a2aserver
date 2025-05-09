@@ -208,6 +208,20 @@ class UserSessionManager:
             )
             ''')
             
+            # 任务历史消息表
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS task_history (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                task_id VARCHAR(255),
+                role VARCHAR(50),
+                content LONGTEXT,
+                message_id VARCHAR(255),
+                conversation_id VARCHAR(255),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (task_id) REFERENCES tasks(task_id) ON DELETE CASCADE
+            )
+            ''')
+            
             self._db_connection.commit()
             cursor.close()
             logger.info("数据库表创建/检查完成")
@@ -1218,6 +1232,56 @@ class UserSessionManager:
                         artifact.index
                     ))
             
+            # 保存任务历史消息
+            if task.history:
+                # 先删除旧的历史记录
+                cursor.execute("""
+                DELETE FROM task_history WHERE task_id = %s
+                """, (task_id,))
+                
+                # 使用集合去重，防止保存重复的历史消息
+                message_ids_seen = set()
+                
+                # 插入新的历史记录
+                for history_message in task.history:
+                    # 跳过没有message_id的消息
+                    if not history_message.metadata or 'message_id' not in history_message.metadata:
+                        continue
+                        
+                    # 获取消息ID并检查是否已处理过
+                    message_id = history_message.metadata.get('message_id')
+                    if message_id in message_ids_seen:
+                        logger.info(f"跳过重复的消息ID {message_id} 的保存")
+                        continue
+                    
+                    # 记录已处理的消息ID
+                    message_ids_seen.add(message_id)
+                    
+                    # 序列化消息内容
+                    message_content = json.dumps({
+                        'role': history_message.role,
+                        'parts': [self._serialize_message_part(part) for part in history_message.parts]
+                    })
+                    
+                    # 获取消息元数据
+                    message_id = None
+                    conversation_id = None
+                    if history_message.metadata:
+                        message_id = history_message.metadata.get('message_id')
+                        conversation_id = history_message.metadata.get('conversation_id')
+                    
+                    cursor.execute("""
+                    INSERT INTO task_history 
+                    (task_id, role, content, message_id, conversation_id) 
+                    VALUES (%s, %s, %s, %s, %s)
+                    """, (
+                        task_id,
+                        history_message.role,
+                        message_content,
+                        message_id,
+                        conversation_id
+                    ))
+            
             self._db_connection.commit()
             cursor.close()
             logger.info(f"已保存任务 {task_id} 到会话 {conversation_id}")
@@ -1280,6 +1344,48 @@ class UserSessionManager:
                 # 反序列化任务数据
                 import json
                 task_data = json.loads(data) if data else {}
+                
+                # 获取任务的历史消息
+                cursor.execute("""
+                SELECT role, content, message_id, conversation_id 
+                FROM task_history 
+                WHERE task_id = %s 
+                ORDER BY created_at ASC
+                """, (task_id,))
+                
+                history = []
+                # 使用集合记录已处理的message_id，防止重复
+                processed_message_ids = set()
+                
+                for history_row in cursor.fetchall():
+                    role, content_json, message_id, history_conversation_id = history_row
+                    
+                    # 跳过已处理的message_id，防止重复
+                    if message_id and message_id in processed_message_ids:
+                        logger.info(f"跳过重复的消息ID: {message_id}")
+                        continue
+                    
+                    try:
+                        content_data = json.loads(content_json) if content_json else {}
+                        history_item = {
+                            'role': role,
+                            'parts': content_data.get('parts', []),
+                            'metadata': {
+                                'message_id': message_id,
+                                'conversation_id': history_conversation_id
+                            } if message_id and history_conversation_id else None
+                        }
+                        history.append(history_item)
+                        
+                        # 记录已处理的message_id
+                        if message_id:
+                            processed_message_ids.add(message_id)
+                            
+                    except Exception as e:
+                        logger.error(f"解析任务历史消息时出错: {e}")
+                
+                # 添加历史消息到任务数据
+                task_data['history'] = history
                 
                 tasks.append({
                     'id': task_id,
