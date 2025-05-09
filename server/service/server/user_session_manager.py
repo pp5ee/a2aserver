@@ -751,7 +751,7 @@ class UserSessionManager:
                 SELECT message_id, role, content, created_at
                 FROM messages 
                 WHERE conversation_id = %s AND wallet_address = %s
-                ORDER BY created_at DESC
+                ORDER BY created_at ASC
                 LIMIT %s
                 """, (conversation_id, wallet_address, limit))
             else:
@@ -760,7 +760,7 @@ class UserSessionManager:
                 SELECT message_id, role, content, created_at
                 FROM messages 
                 WHERE conversation_id = %s
-                ORDER BY created_at DESC
+                ORDER BY created_at ASC
                 LIMIT %s
                 """, (conversation_id, limit))
             

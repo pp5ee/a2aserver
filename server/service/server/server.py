@@ -352,9 +352,9 @@ class ConversationServer:
     # 获取用户钱包地址
     wallet_address = self._get_wallet_address(request)
     
-    # 如果没有获取到钱包地址，从会话ID查询对应的钱包地址
+    # 如果没有获取到
     if not wallet_address and self.use_multi_user:
-      wallet_address = self.user_session_manager.get_conversation_wallet_address(conversation_id)
+       wallet_address='11111111111111111111111111111111'
     
     # 如果是多用户模式且能获取到钱包地址，从数据库读取消息
     if self.use_multi_user and wallet_address:
@@ -363,7 +363,7 @@ class ConversationServer:
         messages = self.user_session_manager.get_conversation_messages(
             conversation_id=conversation_id,
             wallet_address=wallet_address,
-            limit=10
+            limit=20
         )
         if messages:
           # 将数据库格式的消息转换为Message对象
