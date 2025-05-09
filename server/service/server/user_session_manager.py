@@ -2057,8 +2057,13 @@ class AgentStatusChecker:
         self.timer_thread = None
         self.stop_flag = False
         self.lock = threading.Lock()
-        self.interval = 60  # 每60秒检查一次
-        
+        self.interval = 120  # 增加到120秒检查一次，减少检查频率
+        self.max_retries = 2  # 检查失败时最大重试次数
+        self.retry_delay = 5  # 重试间隔(秒)
+        self.last_check_time = {}  # 记录每个代理最后一次检查时间
+        self.agent_failures = {}  # 记录每个代理连续失败次数
+        self.stable_agents = set()  # 记录稳定的代理，这些代理可以降低检查频率
+
     def start_checker(self):
         """启动检查任务"""
         with self.lock:
@@ -2072,7 +2077,8 @@ class AgentStatusChecker:
             # 创建并启动定时任务线程
             self.timer_thread = threading.Thread(
                 target=self._checker_task,
-                daemon=True  # 设置为守护线程，主程序退出时自动结束
+                daemon=True,  # 设置为守护线程，主程序退出时自动结束
+                name="AgentStatusChecker"  # 添加线程名称便于调试
             )
             self.timer_thread.start()
             
@@ -2081,11 +2087,34 @@ class AgentStatusChecker:
     def stop_checker(self):
         """停止检查任务"""
         with self.lock:
+            if not self.timer_thread or not self.timer_thread.is_alive():
+                logger.info("代理状态检查任务未在运行")
+                return
+                
             self.stop_flag = True
             logger.info("已标记停止代理状态检查任务")
+            
+            # 等待线程结束，最多等待10秒
+            self.timer_thread.join(timeout=10)
+            
+            # 确认线程已停止
+            if not self.timer_thread.is_alive():
+                logger.info("代理状态检查任务已停止")
+            else:
+                logger.warning("代理状态检查任务可能未正常停止")
+    
+    def restart_checker(self):
+        """重启检查任务"""
+        self.stop_checker()
+        # 确保完全停止
+        time.sleep(1)
+        self.start_checker()
+        logger.info("代理状态检查任务已重启")
     
     def _checker_task(self):
         """检查任务的执行函数"""
+        next_check_time = time.time()  # 初始化下一次检查时间
+        
         while True:
             # 检查是否需要停止
             with self.lock:
@@ -2093,16 +2122,42 @@ class AgentStatusChecker:
                     logger.info("代理状态检查任务已停止")
                     return
             
+            # 精确控制执行间隔
+            current_time = time.time()
+            if current_time < next_check_time:
+                # 如果还没到下一次检查时间，等待适当的时间
+                sleep_time = min(next_check_time - current_time, 5)  # 最多等待5秒，以便及时响应停止请求
+                time.sleep(sleep_time)
+                continue
+                
+            # 记录开始时间
+            start_time = time.time()
+            
             try:
-                # 执行代理状态检查
-                self._check_all_agents()
+                # 使用超时控制，避免检查过程阻塞太久
+                check_timeout = self.interval * 0.8  # 使用80%的间隔时间作为超时限制
+                
+                # 启动一个守护线程执行检查
+                check_thread = threading.Thread(
+                    target=self._check_all_agents,
+                    daemon=True,
+                    name="AgentStatusCheck"
+                )
+                check_thread.start()
+                
+                # 等待检查完成，但不超过超时时间
+                check_thread.join(timeout=check_timeout)
+                
+                if check_thread.is_alive():
+                    logger.warning(f"代理状态检查超时（超过{check_timeout}秒），将在下一周期继续")
+                    # 不需要强制终止线程，因为它是守护线程
             except Exception as e:
-                logger.error(f"检查代理状态时出错: {e}")
+                logger.error(f"执行代理状态检查任务时出错: {e}")
                 import traceback
                 logger.error(f"错误详情: {traceback.format_exc()}")
             
-            # 等待指定的时间间隔
-            time.sleep(self.interval)
+            # 计算下一次检查时间，保持固定间隔
+            next_check_time = start_time + self.interval
     
     def _check_all_agents(self):
         """检查所有代理的状态"""
@@ -2118,38 +2173,62 @@ class AgentStatusChecker:
             
             cursor = self.user_session_manager._db_connection.cursor()
             
-            # 获取所有代理
-            cursor.execute("SELECT id, agent_url FROM user_agents")
+            # 获取所有代理，直接从数据库中获取而不依赖内存中的agent列表
+            cursor.execute("SELECT id, agent_url, is_online FROM user_agents")
             agents = cursor.fetchall()
             
             logger.info(f"找到 {len(agents)} 个代理需要检查状态")
             
-            for agent_id, agent_url in agents:
+            # 批量更新状态，避免频繁提交事务
+            updates = []
+            
+            for agent_id, agent_url, current_status in agents:
                 try:
-                    # 检查代理状态
+                    # 检查代理状态，设置明确的超时时间
                     is_online, agent_card = self._check_agent_status(agent_url)
                     
-                    # 更新数据库
-                    if agent_card:
-                        agent_card_json = json.dumps(agent_card)
-                        cursor.execute(
-                            "UPDATE user_agents SET is_online = %s, agent_card = %s WHERE id = %s",
-                            (is_online, agent_card_json, agent_id)
-                        )
-                    else:
-                        cursor.execute(
-                            "UPDATE user_agents SET is_online = %s WHERE id = %s",
-                            (is_online, agent_id)
-                        )
+                    # 只有状态真正变化时才更新数据库
+                    if self._status_changed(current_status, is_online):
+                        logger.info(f"代理 {agent_url} 状态变化: {current_status} -> {is_online}")
                         
-                    logger.info(f"代理 {agent_url} 状态: {is_online}")
-                    
+                        # 收集更新信息
+                        if agent_card:
+                            agent_card_json = json.dumps(agent_card)
+                            updates.append((is_online, agent_card_json, agent_id))
+                        else:
+                            updates.append((is_online, None, agent_id))
+                    else:
+                        logger.debug(f"代理 {agent_url} 状态未变: {is_online}")
+                        
                 except Exception as e:
                     logger.error(f"检查代理 {agent_url} 状态时出错: {e}")
                     continue
             
-            # 提交事务
-            self.user_session_manager._db_connection.commit()
+            # 批量执行更新，只在有状态变化时
+            if updates:
+                logger.info(f"有 {len(updates)} 个代理状态需要更新")
+                with_cards = [(status, card, id) for status, card, id in updates if card is not None]
+                without_cards = [(status, id) for status, card, id in updates if card is None]
+                
+                # 更新带卡片数据的代理
+                if with_cards:
+                    cursor.executemany(
+                        "UPDATE user_agents SET is_online = %s, agent_card = %s WHERE id = %s",
+                        with_cards
+                    )
+                
+                # 更新不带卡片数据的代理
+                if without_cards:
+                    cursor.executemany(
+                        "UPDATE user_agents SET is_online = %s WHERE id = %s",
+                        without_cards
+                    )
+                
+                # 提交事务
+                self.user_session_manager._db_connection.commit()
+            else:
+                logger.info("没有代理状态变化，跳过数据库更新")
+            
             cursor.close()
             
             logger.info("完成所有代理状态检查")
@@ -2158,10 +2237,32 @@ class AgentStatusChecker:
             logger.error(f"检查代理状态过程中出错: {e}")
             import traceback
             logger.error(f"错误详情: {traceback.format_exc()}")
+            
+    def _status_changed(self, old_status, new_status):
+        """
+        判断代理状态是否真正变化
+        
+        Args:
+            old_status: 旧状态 ('yes', 'no', 'unknown')
+            new_status: 新状态 ('yes', 'no')
+            
+        Returns:
+            bool: 如果状态真正变化则返回True，否则返回False
+        """
+        # 如果原状态是unknown，则总是需要更新
+        if old_status == 'unknown':
+            return True
+            
+        # 如果新旧状态不同，则需要更新
+        if old_status != new_status:
+            return True
+            
+        # 其他情况则不需要更新
+        return False
     
     def _check_agent_status(self, agent_url):
         """
-        检查单个代理的状态
+        检查单个代理的状态，带有重试机制
         
         Args:
             agent_url: 代理URL
@@ -2170,6 +2271,73 @@ class AgentStatusChecker:
             tuple: (is_online, agent_card)
                 is_online: 'yes' 或 'no'
                 agent_card: 代理卡片数据，如果获取失败则为None
+        """
+        # 对于稳定的代理，降低检查频率
+        if agent_url in self.stable_agents:
+            # 如果最后一次检查时间存在且在60秒内，则跳过检查，保持上次状态
+            now = time.time()
+            if agent_url in self.last_check_time and now - self.last_check_time[agent_url] < 300:  # 5分钟
+                logger.debug(f"代理 {agent_url} 为稳定代理，跳过此次检查")
+                return 'yes', None
+        
+        # 记录当前检查时间
+        self.last_check_time[agent_url] = time.time()
+        
+        # 首次尝试
+        result = self._try_check_agent(agent_url)
+        
+        # 如果失败且配置了重试，进行重试
+        if result[0] == 'no' and self.max_retries > 0:
+            # 更新失败计数
+            self.agent_failures[agent_url] = self.agent_failures.get(agent_url, 0) + 1
+            
+            # 进行重试
+            for retry in range(self.max_retries):
+                logger.info(f"代理 {agent_url} 检查失败，进行第 {retry+1}/{self.max_retries} 次重试")
+                
+                # 等待一段时间后重试
+                time.sleep(self.retry_delay)
+                
+                # 重试检查
+                retry_result = self._try_check_agent(agent_url)
+                
+                # 如果重试成功，则使用重试结果
+                if retry_result[0] == 'yes':
+                    # 重置失败计数
+                    self.agent_failures[agent_url] = 0
+                    
+                    # 如果连续成功多次，标记为稳定代理
+                    if agent_url not in self.stable_agents and self.agent_failures.get(agent_url, 0) == 0:
+                        self.stable_agents.add(agent_url)
+                        logger.info(f"代理 {agent_url} 被标记为稳定代理")
+                    
+                    return retry_result
+        
+        # 如果代理连续成功，标记为稳定代理
+        if result[0] == 'yes':
+            # 重置失败计数
+            self.agent_failures[agent_url] = 0
+            
+            # 如果连续成功多次，标记为稳定代理
+            if agent_url not in self.stable_agents and self.agent_failures.get(agent_url, 0) == 0:
+                self.stable_agents.add(agent_url)
+                logger.info(f"代理 {agent_url} 被标记为稳定代理")
+        # 如果连续失败次数过多，从稳定代理列表中移除
+        elif agent_url in self.stable_agents and self.agent_failures.get(agent_url, 0) >= 3:
+            self.stable_agents.remove(agent_url)
+            logger.info(f"代理 {agent_url} 因连续失败而从稳定代理列表中移除")
+        
+        return result
+    
+    def _try_check_agent(self, agent_url):
+        """
+        尝试检查代理状态的实际实现
+        
+        Args:
+            agent_url: 代理URL
+            
+        Returns:
+            tuple: (is_online, agent_card)
         """
         try:
             import requests
@@ -2181,7 +2349,8 @@ class AgentStatusChecker:
             logger.info(f"请求agent.json URL: {agent_json_url}")
             
             # 设置较短的超时时间，避免长时间等待
-            response = requests.get(agent_json_url, timeout=5)
+            # 连接超时2秒，读取超时3秒
+            response = requests.get(agent_json_url, timeout=(2, 3))
             
             if response.status_code == 200:
                 try:
