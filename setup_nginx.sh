@@ -50,6 +50,34 @@ server {
     add_header X-Frame-Options SAMEORIGIN;
     add_header X-XSS-Protection "1; mode=block";
     
+    # 禁止访问敏感文件和目录
+    location ~ /\.git {
+        deny all;
+        return 404;
+    }
+    
+    location ~ /\.env {
+        deny all;
+        return 404;
+    }
+    
+    location ~ /\.config {
+        deny all;
+        return 404;
+    }
+    
+    # 禁止访问可能包含敏感信息的路径模式
+    location ~ /\.(htaccess|htpasswd|svn|DS_Store) {
+        deny all;
+        return 404;
+    }
+    
+    # 禁止随机路径格式的探测请求
+    location ~ ^/[a-zA-Z0-9]{10,}/api/ {
+        deny all;
+        return 404;
+    }
+    
     # API反向代理配置 - 通过/beapi路径
     location /beapi/ {
         # 移除/beapi前缀，将请求转发到后端API

@@ -36,6 +36,8 @@ from fastapi import FastAPI, APIRouter, Request, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Awaitable, Callable, List, Optional, Tuple, Union, Dict
 import datetime
+from concurrent.futures import ThreadPoolExecutor
+import sys
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -262,8 +264,81 @@ class ConversationServer:
         max_messages=10  # 保留最新的10条消息
       )
     
-    t = threading.Thread(target=lambda: asyncio.run(manager.process_message(message)))
-    t.start()
+    # 改进的异步任务处理，增强稳定性和错误恢复能力
+    async def process_message_with_timeout():
+        """使用超时机制处理消息"""
+        try:
+            # 增加超时时间到60秒，确保有足够的处理时间
+            await asyncio.wait_for(
+                manager.process_message(message),
+                timeout=60.0
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"处理消息超时: {message.metadata.get('message_id', 'unknown')}")
+            # 在超时情况下尝试取消任务并清理资源
+            try:
+                # 尝试在超时时通知用户
+                if message.metadata and 'message_id' in message.metadata:
+                    # 记录超时状态以便前端可以显示
+                    if hasattr(manager, '_pending_message_ids') and message.metadata['message_id'] in manager._pending_message_ids:
+                        manager._pending_message_ids[message.metadata['message_id']] = "处理超时，请重试"
+            except Exception as cleanup_err:
+                logger.error(f"超时处理清理失败: {cleanup_err}")
+        except Exception as e:
+            logger.error(f"处理消息时出错: {e}")
+            import traceback
+            logger.error(f"错误详情: {traceback.format_exc()}")
+    
+    # 使用线程池执行异步任务，而不是为每个请求创建新线程
+    def run_async_task():
+        """在线程池中运行异步任务"""
+        try:
+            # 为当前线程创建新的事件循环
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            # 在事件循环中运行任务
+            try:
+                loop.run_until_complete(process_message_with_timeout())
+            except Exception as e:
+                logger.error(f"执行异步任务失败: {e}")
+            finally:
+                # 关闭前取消所有挂起的任务
+                tasks = asyncio.all_tasks(loop)
+                for task in tasks:
+                    task.cancel()
+                
+                # 等待任务取消完成
+                if tasks:
+                    try:
+                        loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+                    except Exception:
+                        pass
+                    
+                # 关闭循环并释放资源
+                loop.close()
+        except Exception as e:
+            logger.error(f"消息处理线程出错: {e}")
+    
+    # 使用全局线程池运行异步任务，避免创建过多线程
+    # 从全局变量获取线程池
+    thread_pool = None
+    
+    # 尝试从主模块获取线程池
+    try:
+        if 'main' in sys.modules:
+            main_module = sys.modules['main']
+            if hasattr(main_module, 'thread_pool'):
+                thread_pool = main_module.thread_pool
+    except Exception:
+        pass
+    
+    # 如果没有找到全局线程池，则创建一个局部的
+    if thread_pool is None:
+        thread_pool = ThreadPoolExecutor(max_workers=20, thread_name_prefix="message_worker")
+    
+    # 提交任务到线程池
+    thread_pool.submit(run_async_task)
     
     return SendMessageResponse(result=MessageInfo(
         message_id=message.metadata['message_id'],

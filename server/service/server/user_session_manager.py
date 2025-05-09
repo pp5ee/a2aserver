@@ -1856,20 +1856,55 @@ class UserSubscriptionChecker:
                         return
             
             try:
-                # 执行NFT订阅状态检查
-                # 创建一个异步事件循环来运行异步函数
+                # 使用超时控制来执行NFT订阅状态检查
                 import asyncio
+                # 创建一个异步事件循环来运行异步函数
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
+                
                 try:
-                    loop.run_until_complete(self._check_user_subscriptions(wallet_address))
+                    # 添加超时控制，防止检查过程阻塞
+                    async def check_with_timeout():
+                        try:
+                            # 使用30秒超时
+                            await asyncio.wait_for(
+                                self._check_user_subscriptions(wallet_address),
+                                timeout=30.0
+                            )
+                        except asyncio.TimeoutError:
+                            logger.error(f"检查用户 {wallet_address} NFT订阅超时")
+                        except Exception as e:
+                            logger.error(f"检查用户 {wallet_address} NFT订阅时出错: {e}")
+                    
+                    # 运行带超时的检查任务
+                    loop.run_until_complete(check_with_timeout())
+                    
                 finally:
-                    loop.close()
+                    # 确保资源被正确释放
+                    try:
+                        # 取消所有挂起任务
+                        pending = asyncio.all_tasks(loop)
+                        if pending:
+                            loop.run_until_complete(
+                                asyncio.gather(*pending, return_exceptions=True)
+                            )
+                    except Exception as e:
+                        logger.error(f"清理事件循环任务时出错: {e}")
+                    finally:
+                        # 关闭事件循环
+                        loop.close()
+                
             except Exception as e:
                 logger.error(f"检查用户 {wallet_address} 的NFT订阅时出错: {e}")
             
             # 等待1分钟
-            time.sleep(60)
+            # 优化: 分段等待，以便更快响应停止请求
+            for _ in range(6):  # 每10秒检查一次停止标志，共等待60秒
+                time.sleep(10)
+                with self.lock:
+                    if self.stop_flags.get(wallet_address, True):
+                        logger.info(f"用户 {wallet_address} 的NFT订阅检查定时任务被中途停止")
+                        return
     
     async def _check_user_subscriptions(self, wallet_address: str):
         """检查用户的NFT订阅状态并更新数据库"""

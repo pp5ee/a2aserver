@@ -9,6 +9,12 @@ import logging
 import json
 import time
 from typing import Optional
+import re
+from collections import defaultdict
+from datetime import datetime, timedelta
+import concurrent.futures
+import psutil
+import gc
 
 import mesop as me
 
@@ -54,6 +60,178 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# 全局线程池，用于异步任务执行
+thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=50, thread_name_prefix="a2a_worker")
+
+# 添加性能监控
+def monitor_system_resources():
+    """定期监控系统资源使用情况"""
+    try:
+        # 获取当前进程
+        process = psutil.Process(os.getpid())
+        
+        # 记录内存使用情况
+        memory_info = process.memory_info()
+        logger.info(f"内存使用: RSS={memory_info.rss/1024/1024:.2f}MB, VMS={memory_info.vms/1024/1024:.2f}MB")
+        
+        # 记录线程数量
+        thread_count = len(process.threads())
+        logger.info(f"线程数量: {thread_count}")
+        
+        # 记录CPU使用率
+        cpu_percent = process.cpu_percent(interval=1.0)
+        logger.info(f"CPU使用率: {cpu_percent}%")
+        
+        # 记录打开的文件数
+        try:
+            open_files = len(process.open_files())
+            logger.info(f"打开的文件数: {open_files}")
+        except:
+            pass
+        
+        # 计算活跃线程池数量
+        active_threads = len([t for t in threading.enumerate() if t.is_alive()])
+        logger.info(f"活跃线程: {active_threads}/{threading.active_count()}")
+        
+        # 手动触发垃圾收集
+        collected = gc.collect()
+        logger.info(f"垃圾收集: 回收了 {collected} 个对象")
+    except Exception as e:
+        logger.error(f"监控系统资源时出错: {e}")
+
+# 启动监控线程
+def start_monitoring():
+    """启动一个后台线程定期监控系统资源"""
+    def monitoring_task():
+        while True:
+            try:
+                monitor_system_resources()
+                time.sleep(300)  # 每5分钟监控一次
+            except Exception as e:
+                logger.error(f"系统监控线程出错: {e}")
+                time.sleep(60)  # 出错后等待1分钟再次尝试
+    
+    # 启动监控线程
+    monitor_thread = threading.Thread(target=monitoring_task, daemon=True)
+    monitor_thread.start()
+    logger.info("系统资源监控线程已启动")
+
+# 添加速率限制的类
+class RateLimiter:
+    def __init__(self, max_requests=200, time_window=60):
+        """
+        初始化速率限制器
+        
+        Args:
+            max_requests: 在时间窗口内允许的最大请求数
+            time_window: 时间窗口大小（秒）
+        """
+        self.max_requests = max_requests
+        self.time_window = time_window
+        # 存储每个IP的请求历史，使用字典的形式
+        # 键是IP地址，值是一个列表，包含该IP地址的请求时间戳
+        self.request_history = defaultdict(list)
+        
+        # 定期清理过期的请求历史
+        self._start_cleanup_thread()
+    
+    def _start_cleanup_thread(self):
+        """启动一个线程定期清理过期的请求历史"""
+        thread = threading.Thread(target=self._cleanup_expired_records, daemon=True)
+        thread.start()
+    
+    def _cleanup_expired_records(self):
+        """定期清理过期的请求历史"""
+        while True:
+            try:
+                now = datetime.now()
+                # 遍历所有IP地址
+                for ip in list(self.request_history.keys()):
+                    # 计算过期时间点
+                    cutoff_time = now - timedelta(seconds=self.time_window)
+                    
+                    # 过滤掉过期的请求记录
+                    self.request_history[ip] = [
+                        ts for ts in self.request_history[ip] 
+                        if ts > cutoff_time
+                    ]
+                    
+                    # 如果该IP没有请求记录了，删除该IP的键
+                    if not self.request_history[ip]:
+                        del self.request_history[ip]
+            except Exception as e:
+                logger.error(f"清理请求历史时出错: {e}")
+            
+            # 每10秒清理一次
+            time.sleep(10)
+    
+    def is_allowed(self, ip: str) -> bool:
+        """
+        检查给定的IP是否被允许发送请求
+        
+        Args:
+            ip: 客户端IP地址
+            
+        Returns:
+            bool: 如果允许请求则返回True，否则返回False
+        """
+        now = datetime.now()
+        
+        # 添加当前请求到历史记录
+        self.request_history[ip].append(now)
+        
+        # 计算过期时间点
+        cutoff_time = now - timedelta(seconds=self.time_window)
+        
+        # 过滤非过期的请求记录
+        recent_requests = [ts for ts in self.request_history[ip] if ts > cutoff_time]
+        
+        # 更新请求历史
+        self.request_history[ip] = recent_requests
+        
+        # 检查请求次数是否超过限制
+        return len(recent_requests) <= self.max_requests
+
+    def get_remaining_requests(self, ip: str) -> int:
+        """
+        获取给定IP在当前时间窗口内还可以发送的请求数
+        
+        Args:
+            ip: 客户端IP地址
+            
+        Returns:
+            int: 剩余可用请求数
+        """
+        now = datetime.now()
+        cutoff_time = now - timedelta(seconds=self.time_window)
+        
+        # 过滤非过期的请求记录
+        recent_requests = [ts for ts in self.request_history[ip] if ts > cutoff_time]
+        
+        # 计算剩余请求数
+        remaining = max(0, self.max_requests - len(recent_requests))
+        return remaining
+    
+    def get_reset_time(self, ip: str) -> Optional[datetime]:
+        """
+        获取给定IP的速率限制何时重置
+        
+        Args:
+            ip: 客户端IP地址
+            
+        Returns:
+            Optional[datetime]: 重置时间，如果没有请求历史则返回None
+        """
+        if ip not in self.request_history or not self.request_history[ip]:
+            return None
+        
+        # 获取最早的请求时间
+        earliest_request = min(self.request_history[ip])
+        
+        # 计算重置时间
+        reset_time = earliest_request + timedelta(seconds=self.time_window)
+        return reset_time
 
 def on_load(e: me.LoadEvent):  # pylint: disable=unused-argument
     """On load event"""
@@ -157,6 +335,9 @@ router = APIRouter()
 agent_server = ConversationServer(router)
 app.include_router(router)
 
+# 创建全局的速率限制器实例，限制每个IP每分钟200次请求
+rate_limiter = RateLimiter(max_requests=200, time_window=60)
+
 # 设置API文档（Swagger UI和ReDoc）
 try:
     # 加载pyyaml库
@@ -168,7 +349,110 @@ except ImportError:
 except Exception as e:
     logger.warning(f"API文档配置失败: {str(e)}")
 
+# 添加CORS中间件以支持跨域请求
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 允许所有来源，生产环境应该限制
+    allow_credentials=True,
+    allow_methods=["*"],  # 允许所有方法
+    allow_headers=["*"],  # 允许所有请求头
+    expose_headers=["*"]  # 允许暴露所有响应头
+)
 
+# 添加速率限制中间件
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    """限制请求速率的中间件，防止DoS攻击"""
+    # 获取客户端IP
+    client_ip = request.client.host if request.client else "unknown"
+    
+    # 白名单IP，跳过限制（可选）
+    whitelist_ips = ["127.0.0.1", "::1"]  # localhost
+    if client_ip in whitelist_ips:
+        return await call_next(request)
+    
+    # 检查请求是否被允许
+    if rate_limiter.is_allowed(client_ip):
+        # 如果允许，处理请求
+        response = await call_next(request)
+        
+        # 添加速率限制相关的头信息
+        remaining = rate_limiter.get_remaining_requests(client_ip)
+        reset_time = rate_limiter.get_reset_time(client_ip)
+        
+        response.headers["X-RateLimit-Limit"] = str(rate_limiter.max_requests)
+        response.headers["X-RateLimit-Remaining"] = str(remaining)
+        
+        if reset_time:
+            # 将重置时间转换为Unix时间戳
+            reset_timestamp = int(reset_time.timestamp())
+            response.headers["X-RateLimit-Reset"] = str(reset_timestamp)
+        
+        return response
+    else:
+        # 如果请求超过限制，返回429错误
+        reset_time = rate_limiter.get_reset_time(client_ip)
+        reset_seconds = int((reset_time - datetime.now()).total_seconds()) if reset_time else 60
+        
+        # 记录日志
+        logger.warning(f"IP {client_ip} 超过速率限制，在 {reset_seconds} 秒后重置")
+        
+        # 构建响应
+        error_response = {
+            "error": "Too Many Requests",
+            "message": f"请求频率超过限制。请在 {reset_seconds} 秒后重试。",
+            "status": 429
+        }
+        
+        response = Response(
+            content=json.dumps(error_response),
+            status_code=429,
+            media_type="application/json"
+        )
+        
+        # 添加标准的速率限制响应头
+        response.headers["Retry-After"] = str(reset_seconds)
+        
+        return response
+
+# 添加安全中间件，防止敏感文件访问
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    """拦截对敏感路径的访问尝试"""
+    path = request.url.path.lower()
+    
+    # 检查是否是敏感路径或可能的探测攻击
+    sensitive_patterns = [
+        "/.git/", "/.env", "/.config", "/admin", 
+        "/.htaccess", "/.htpasswd", "/.svn", "/.DS_Store",
+        "/wp-admin", "/wp-login", "/wp-includes",  # WordPress相关路径
+        "/shell", "/phpinfo", "/phpmyadmin",  # 常见探测目标
+        "/solr", "/jenkins", "/manager/html",  # 其他常见应用探测
+    ]
+    
+    random_api_pattern = re.compile(r'^/[a-zA-Z0-9]{10,}/api/')
+    
+    # 检查敏感路径
+    for pattern in sensitive_patterns:
+        if pattern in path:
+            logger.warning(f"检测到对敏感路径的访问尝试: {path}")
+            return Response(
+                content=json.dumps({"error": "Not Found"}),
+                status_code=404,
+                media_type="application/json"
+            )
+    
+    # 检查随机格式的API探测请求
+    if random_api_pattern.match(path):
+        logger.warning(f"检测到可疑的API路径探测: {path}")
+        return Response(
+            content=json.dumps({"error": "Not Found"}),
+            status_code=404,
+            media_type="application/json"
+        )
+    
+    # 继续处理正常请求
+    return await call_next(request)
 
 # add middleware to verify signature and record request header information
 @app.middleware("http")
@@ -276,6 +560,54 @@ async def catch_exceptions(request: Request, call_next):
             media_type="application/json"
         )
 
+# 添加健康和资源监控中间件，位于全局异常处理middleware之后
+
+# 添加资源监控中间件
+@app.middleware("http")
+async def resource_monitoring_middleware(request: Request, call_next):
+    """监控每个请求的资源使用情况"""
+    # 记录请求开始时间
+    start_time = time.time()
+    
+    # 记录开始时的资源状态
+    process = psutil.Process(os.getpid())
+    start_memory = process.memory_info().rss / 1024 / 1024  # MB
+    
+    # 处理请求
+    response = await call_next(request)
+    
+    # 请求结束，计算资源使用情况
+    end_time = time.time()
+    end_memory = process.memory_info().rss / 1024 / 1024  # MB
+    
+    # 计算差异
+    duration = end_time - start_time
+    memory_diff = end_memory - start_memory
+    
+    # 记录长时间运行的请求或内存消耗大的请求
+    if duration > 1.0 or abs(memory_diff) > 5.0:
+        path = request.url.path
+        logger.info(
+            f"资源监控 - 路径: {path}, "
+            f"持续时间: {duration:.2f}秒, "
+            f"内存变化: {memory_diff:.2f}MB, "
+            f"当前内存: {end_memory:.2f}MB"
+        )
+    
+    # 如果请求处理时间超过10秒，记录警告
+    if duration > 10.0:
+        logger.warning(
+            f"请求处理时间过长 - 路径: {request.url.path}, "
+            f"处理时间: {duration:.2f}秒"
+        )
+        
+    # 如果内存使用超过预设阈值，触发垃圾回收
+    if end_memory > 1000:  # 如果内存使用超过1GB
+        logger.warning(f"内存使用过高: {end_memory:.2f}MB，触发垃圾回收")
+        gc.collect()
+    
+    return response
+
 # 定义一个简单的健康检查端点
 @app.get("/health")
 async def health_check():
@@ -367,15 +699,6 @@ app.mount(
         me.create_wsgi_app(debug_mode=os.environ.get("DEBUG_MODE", "") == "true")
     ),
 )
-# add CORS middleware to support cross-domain requests
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # allow all sources, should be limited in production environment
-    allow_credentials=False,
-    allow_methods=["*"],  # allow all methods
-    allow_headers=["*"],  # allow all request headers
-    expose_headers=["*"]  # allow expose all response headers
-)
 
 if __name__ == "__main__":    
 
@@ -387,13 +710,26 @@ if __name__ == "__main__":
     # Set the client to talk to the server
     host_agent_service.server_url = f"http://{host}:{port}"
 
+    # 启动监控线程
+    start_monitoring()
+    
     logger.info(f"server started at {host}:{port}, multi-user support enabled")
     
+    # 使用更优化的Uvicorn配置运行应用，避免异步I/O阻塞
     uvicorn.run(
         "main:app",
         host=host,
         port=port,
-        reload=True,
-        reload_includes=["*.py", "*.js"],
-        timeout_graceful_shutdown=0,
+        reload=os.environ.get("DEBUG_MODE", "") == "true",
+        reload_includes=["*.py", "*.js"] if os.environ.get("DEBUG_MODE", "") == "true" else None,
+        workers=int(os.environ.get("UVICORN_WORKERS", "4")),  # 可通过环境变量调整工作进程数
+        timeout_keep_alive=120,  # 增加keep-alive超时时间
+        timeout_graceful_shutdown=30,  # 设置优雅关闭的超时时间
+        loop="uvloop",  # 使用uvloop作为事件循环实现，比asyncio默认循环更高效
+        limit_concurrency=1000,  # 限制并发连接数
+        backlog=2048,  # 增加挂起连接队列大小
+        log_level="info",
+        proxy_headers=True,  # 启用代理头处理，确保正确识别客户端IP
+        forwarded_allow_ips="*",  # 允许所有IP的转发头
+        h11_max_incomplete_event_size=16*1024*1024,  # 增加HTTP解析缓冲区大小
     )

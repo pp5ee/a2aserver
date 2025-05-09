@@ -34,6 +34,7 @@ from google.adk.events.event import Event as ADKEvent
 from google.adk.events.event_actions import EventActions as ADKEventActions
 from google.genai import types
 import base64
+import time
 
 
 class ADKHostManager(ApplicationManager):
@@ -129,131 +130,212 @@ class ADKHostManager(ApplicationManager):
     return message
 
   async def process_message(self, message: Message):
-    self._messages.append(message)
+    # 添加消息处理开始时间记录
+    start_time = time.time()
+    
+    # 获取消息ID和会话ID，用于追踪和错误处理
     message_id = get_message_id(message)
-    if message_id:
-      self._pending_message_ids.append(message_id)
     conversation_id = (
         message.metadata['conversation_id']
         if 'conversation_id' in message.metadata
         else None
     )
-    # Now check the conversation and attach the message id.
-    conversation = self.get_conversation(conversation_id)
-    if conversation:
-      conversation.messages.append(message)
-    self.add_event(Event(
-        id=str(uuid.uuid4()),
-        actor='user',
-        content=message,
-        timestamp=datetime.datetime.utcnow().timestamp(),
-    ))
-    final_event: GenAIEvent | None = None
     
-    # 确保会话存在，如果不存在则创建一个
+    # 错误检查：确保有效的消息ID和会话ID
+    if not message_id:
+      print(f"警告: 消息没有有效的ID，跳过处理")
+      return
+    
+    if not conversation_id:
+      print(f"警告: 消息 {message_id} 没有有效的会话ID，跳过处理")
+      if message_id in self._pending_message_ids:
+        self._pending_message_ids.remove(message_id)
+      return
+    
+    # 添加消息到处理队列
     try:
-      session = self._session_service.get_session(
-          app_name='A2A',
-          user_id='test_user',
-          session_id=conversation_id)
+      self._messages.append(message)
+      self._pending_message_ids.append(message_id)
       
-      # 检查会话是否有效且具有状态
-      if not session or not hasattr(session, 'state') or session.state is None:
-        # 创建新会话
+      # 获取或创建会话
+      conversation = self.get_conversation(conversation_id)
+      if conversation:
+        conversation.messages.append(message)
+      else:
+        # 如果会话不存在，创建新会话
+        print(f"会话 {conversation_id} 不存在，创建新会话")
+        conversation = self.create_conversation()
+        conversation.conversation_id = conversation_id
+        conversation.messages.append(message)
+      
+      # 添加事件记录
+      self.add_event(Event(
+          id=str(uuid.uuid4()),
+          actor='user',
+          content=message,
+          timestamp=datetime.datetime.utcnow().timestamp(),
+      ))
+      
+      final_event: GenAIEvent | None = None
+      
+      # 会话管理
+      try:
+        session = self._session_service.get_session(
+            app_name='A2A',
+            user_id='test_user',
+            session_id=conversation_id)
+        
+        # 检查会话是否有效
+        if not session or not hasattr(session, 'state') or session.state is None:
+          # 创建新会话
+          session = self._session_service.create_session(
+              app_name=self.app_name,
+              user_id=self.user_id,
+              session_id=conversation_id)
+      except Exception as e:
+        # 会话获取失败，记录错误并创建新会话
+        print(f"获取会话失败: {e}，创建新会话")
         session = self._session_service.create_session(
             app_name=self.app_name,
             user_id=self.user_id,
             session_id=conversation_id)
-    except Exception as e:
-      # 如果获取会话失败，创建新会话
-      session = self._session_service.create_session(
-          app_name=self.app_name,
-          user_id=self.user_id,
-          session_id=conversation_id)
-          
-    # Update state must happen in the event
-    state_update = {
-        'input_message_metadata': message.metadata,
-        'session_id': conversation_id
-    }
-    last_message_id = get_last_message_id(message)
-    if (last_message_id and
-        last_message_id in self._task_map and
-        task_still_open(next(
-            filter(
-                lambda x: x.id == self._task_map[last_message_id],
-                self._tasks),
-            None))):
-          state_update['task_id'] = self._task_map[last_message_id]
-    
-    # 需要确保会话存在并有状态
-    try:
-      # Need to upsert session state now, only way is to append an event.
-      self._session_service.append_event(session, ADKEvent(
-          id=ADKEvent.new_id(),
-          author="host_agent",
-          invocation_id=ADKEvent.new_id(),
-          actions=ADKEventActions(state_delta=state_update),
-      ))
-    except AttributeError as e:
-      # 如果会话状态无效，记录错误并继续
-      print(f"警告: 无法更新会话状态: {e}")
-    
-    # 运行异步处理
-    try:
-      async for event in self._host_runner.run_async(
-          user_id=self.user_id,
-          session_id=conversation_id,
-          new_message=self.adk_content_from_message(message)
-      ):
-        self.add_event(Event(
-            id=event.id,
-            actor=event.author,
-            content=self.adk_content_to_message(event.content, conversation_id),
-            timestamp=event.timestamp,
-        ))
-        final_event = event
-    except Exception as e:
-      # 处理运行时异常
-      print(f"处理消息时出错: {e}")
-      self._pending_message_ids.remove(message_id)
-      return
-      
-    response: Message | None = None
-    if final_event:
-      final_event.content.role = 'model'
-      response = self.adk_content_to_message(final_event.content, conversation_id)
-      last_message_id = get_message_id(message)
-      new_message_id = ""
-      if last_message_id and last_message_id in self._next_id:
-        new_message_id = self._next_id[last_message_id]
-      else:
-        new_message_id = str(uuid.uuid4())
-        last_message_id = None
-      response.metadata = {
-          **message.metadata,
-          **{'last_message_id': last_message_id,
-             'message_id': new_message_id}
+            
+      # 更新会话状态
+      state_update = {
+          'input_message_metadata': message.metadata,
+          'session_id': conversation_id
       }
-      self._messages.append(response)
-
-      # 保存代理响应到数据库
+      
+      last_message_id = get_last_message_id(message)
+      if (last_message_id and
+          last_message_id in self._task_map and
+          task_still_open(next(
+              filter(
+                  lambda x: x.id == self._task_map[last_message_id],
+                  self._tasks),
+              None))):
+            state_update['task_id'] = self._task_map[last_message_id]
+      
+      # 更新会话状态，容错处理
       try:
-        # 从消息元数据中获取钱包地址
-        wallet_address = message.metadata.get('wallet_address')
-        if wallet_address and conversation_id:
-          from service.server.user_session_manager import UserSessionManager
-          UserSessionManager.get_instance().save_message_from_object(
-            wallet_address=wallet_address,
-            message=response
-          )
-          print(f"已保存代理响应到数据库，消息ID: {new_message_id}")
+        self._session_service.append_event(session, ADKEvent(
+            id=ADKEvent.new_id(),
+            author="host_agent",
+            invocation_id=ADKEvent.new_id(),
+            actions=ADKEventActions(state_delta=state_update),
+        ))
+      except AttributeError as e:
+        print(f"警告: 无法更新会话状态: {e}")
       except Exception as e:
-        print(f"保存代理响应到数据库时出错: {e}")
-
-    if conversation:
-      conversation.messages.append(response)
-    self._pending_message_ids.remove(message_id)
+        print(f"更新会话状态时出错: {e}")
+      
+      # 处理消息，使用更健壮的错误处理
+      response = None
+      try:
+        # 设置超时控制，防止无限等待
+        async def process_with_timeout():
+          nonlocal final_event
+          async for event in self._host_runner.run_async(
+              user_id=self.user_id,
+              session_id=conversation_id,
+              new_message=self.adk_content_from_message(message)
+          ):
+            self.add_event(Event(
+                id=event.id,
+                actor=event.author,
+                content=self.adk_content_to_message(event.content, conversation_id),
+                timestamp=event.timestamp,
+            ))
+            final_event = event
+        
+        # 执行带超时的处理，90秒超时
+        await asyncio.wait_for(process_with_timeout(), timeout=90.0)
+        
+        # 处理结果，生成响应消息
+        if final_event:
+          final_event.content.role = 'model'
+          response = self.adk_content_to_message(final_event.content, conversation_id)
+          last_message_id = get_message_id(message)
+          new_message_id = ""
+          if last_message_id and last_message_id in self._next_id:
+            new_message_id = self._next_id[last_message_id]
+          else:
+            new_message_id = str(uuid.uuid4())
+            last_message_id = None
+          response.metadata = {
+              **message.metadata,
+              **{'last_message_id': last_message_id,
+                 'message_id': new_message_id}
+          }
+          self._messages.append(response)
+    
+          # 保存代理响应到数据库
+          try:
+            # 从消息元数据中获取钱包地址
+            wallet_address = message.metadata.get('wallet_address')
+            if wallet_address and conversation_id:
+              from service.server.user_session_manager import UserSessionManager
+              UserSessionManager.get_instance().save_message_from_object(
+                wallet_address=wallet_address,
+                message=response
+              )
+              print(f"已保存代理响应到数据库，消息ID: {new_message_id}")
+          except Exception as e:
+            print(f"保存代理响应到数据库时出错: {e}")
+    
+        # 将响应添加到会话
+        if response and conversation:
+          conversation.messages.append(response)
+          
+      except asyncio.TimeoutError:
+        # 处理超时，生成超时提示消息
+        print(f"消息 {message_id} 处理超时")
+        error_msg = Message(
+          id=f"timeout_{message_id}",
+          role="system",
+          parts=[TextPart(text="消息处理超时，请稍后重试")],
+          metadata={
+            'conversation_id': conversation_id,
+            'message_id': f"timeout_{message_id}"
+          }
+        )
+        if conversation:
+          conversation.messages.append(error_msg)
+          
+      except Exception as e:
+        # 处理其他错误
+        import traceback
+        print(f"处理消息 {message_id} 时出错: {e}")
+        print(f"错误详情: {traceback.format_exc()}")
+        error_msg = Message(
+          id=f"error_{message_id}",
+          role="system",
+          parts=[TextPart(text=f"处理消息时出错: {str(e)}")],
+          metadata={
+            'conversation_id': conversation_id,
+            'message_id': f"error_{message_id}"
+          }
+        )
+        if conversation:
+          conversation.messages.append(error_msg)
+      
+      # 清理：从待处理列表中移除
+      if message_id in self._pending_message_ids:
+        self._pending_message_ids.remove(message_id)
+        
+      # 记录处理时间
+      processing_time = time.time() - start_time
+      print(f"消息 {message_id} 处理完成，耗时: {processing_time:.2f}秒")
+      
+    except Exception as outer_e:
+      # 捕获外部异常，确保不会导致服务器崩溃
+      import traceback
+      print(f"处理消息 {message_id} 的外层异常: {outer_e}")
+      print(f"外层错误详情: {traceback.format_exc()}")
+      
+      # 清理：从待处理列表中移除
+      if message_id in self._pending_message_ids:
+        self._pending_message_ids.remove(message_id)
 
   def add_task(self, task: Task):
     self._tasks.append(task)
