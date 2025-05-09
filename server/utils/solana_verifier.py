@@ -549,47 +549,40 @@ async def get_nft_metadata_url_direct(rpc_url: str, agent_nft_pda: str) -> str:
         # 记录账户数据总长度，用于调试
         logger.info(f"账户数据总长度: {len(account_data)}")
         
-        # 使用特征提取的方式获取元数据URL
-        # 将账户数据转换为文本并查找URL特征
+        # 创建原始数据的十六进制转储，便于调试
+        hex_dump = ' '.join([f"{b:02x}" for b in account_data[:100]])
+        logger.info(f"账户数据十六进制转储(前100字节): {hex_dump}")
+        
+        # 多种提取方法
+        extracted_urls = []
+        
+        # 方法1: 使用特征提取 - 查找URL前缀
         try:
             # 解码整个账户数据，忽略错误
             data_str = account_data.decode('utf-8', errors='ignore')
             
-            # 查找常见的URL前缀
-            for prefix in ['http://', 'https://', 'www.']:
+            # 查找常见的URL前缀 (增加更多的前缀模式)
+            for prefix in ['http://', 'https://', 'www.', 'HTTP://', 'HTTPS://']:
                 index = data_str.find(prefix)
                 if index >= 0:
                     # 找到URL前缀，提取URL直到遇到不可打印字符
                     url_start = index
                     url_end = url_start
                     
-                    # 继续读取直到遇到不可见字符或空格
-                    while url_end < len(data_str) and data_str[url_end] >= ' ' and data_str[url_end] <= '~':
+                    # 继续读取直到遇到不可见字符、空格或其他常见的URL结束符
+                    while url_end < len(data_str) and data_str[url_end] >= ' ' and data_str[url_end] <= '~' and data_str[url_end] not in ['"', "'", '>', '<', ' ', '\t']:
                         url_end += 1
                     
                     raw_agent_url = data_str[url_start:url_end]
-                    logger.info(f"通过特征提取到的元数据URL: {raw_agent_url}")
+                    logger.info(f"方法1提取到的URL: {raw_agent_url}")
                     
                     # URL长度不应该太短
-                    if len(raw_agent_url) < 10:
-                        logger.warning(f"提取的URL长度过短，可能不正确: {raw_agent_url}")
-                        continue
-                    
-                    # 验证是否是合法URL
-                    try:
-                        from urllib.parse import urlparse
-                        parsed_url = urlparse(raw_agent_url)
-                        if parsed_url.scheme and parsed_url.netloc:
-                            return raw_agent_url
-                    except Exception as url_error:
-                        logger.warning(f"URL验证失败: {url_error}")
-                        continue
-            
-            logger.warning("在账户数据中未能找到有效的URL前缀")
+                    if len(raw_agent_url) >= 10:
+                        extracted_urls.append(raw_agent_url)
         except Exception as decode_error:
-            logger.error(f"解码账户数据失败: {decode_error}")
+            logger.error(f"方法1解码失败: {decode_error}")
         
-        # 如果特征提取失败，尝试使用Anchor账户结构启发式解析
+        # 方法2: Anchor账户结构解析
         try:
             # AgentNft预期结构: discriminator(8) + owner(32) + mint(32) + metadataUrl(string)
             # string格式: length(4 bytes) + 内容
@@ -603,29 +596,58 @@ async def get_nft_metadata_url_direct(rpc_url: str, agent_nft_pda: str) -> str:
                 str_len_bytes = account_data[72:76]
                 str_len = int.from_bytes(str_len_bytes, byteorder='little')
                 
-                logger.info(f"提取的URL长度: {str_len}")
+                logger.info(f"方法2解析的URL长度: {str_len}")
                 
-                # 验证长度是否合理 (比如小于500且不超出数据长度)
-                if 0 < str_len < 500 and 76 + str_len <= len(account_data):
+                # 验证长度是否合理 (比如小于1000且不超出数据长度)
+                if 0 < str_len < 1000 and 76 + str_len <= len(account_data):
                     # 提取字符串内容
                     str_data = account_data[76:76+str_len]
                     try:
-                        url = str_data.decode('utf-8')
-                        logger.info(f"通过账户结构解析到的URL: {url}")
+                        url = str_data.decode('utf-8', errors='replace')
+                        logger.info(f"方法2解析到的URL: {url}")
                         
-                        # 确保URL以http://或https://开头
-                        if url.startswith('http://') or url.startswith('https://'):
-                            return url
-                        
-                        # 添加前缀
-                        logger.info(f"为URL添加http://前缀: {url}")
-                        return f"http://{url}"
+                        # 长度应该合理
+                        if len(url) >= 10:
+                            extracted_urls.append(url)
                     except Exception as str_error:
-                        logger.error(f"解码URL字符串失败: {str_error}")
+                        logger.error(f"方法2解码URL失败: {str_error}")
         except Exception as struct_error:
-            logger.error(f"解析账户结构失败: {struct_error}")
+            logger.error(f"方法2解析失败: {struct_error}")
+            
+        # 方法3: 启发式搜索 - 在整个数据中搜索可能的URL模式
+        try:
+            import re
+            # 使用正则表达式查找URL模式
+            # 包括HTTP/HTTPS URLs
+            url_pattern = re.compile(rb'https?://[^\x00-\x20\x7F-\xFF]{3,}')
+            urls = url_pattern.findall(account_data)
+            
+            for url_bytes in urls:
+                try:
+                    url = url_bytes.decode('utf-8', errors='replace')
+                    logger.info(f"方法3找到的URL: {url}")
+                    if len(url) >= 10:
+                        extracted_urls.append(url)
+                except Exception as e:
+                    logger.error(f"解码URL时出错: {e}")
+        except Exception as regex_error:
+            logger.error(f"方法3正则搜索失败: {regex_error}")
         
-        # 所有方法都失败，返回默认URL
+        # 处理提取的URL列表
+        if extracted_urls:
+            # 排序提取的URL，优先选择更长且看起来更有效的URL
+            extracted_urls.sort(key=lambda x: (
+                # 优先选择arweave.net和IPFS URLs
+                1 if "arweave.net" in x.lower() else 
+                (1 if "ipfs" in x.lower() else 0),
+                # 然后按长度排序
+                len(x)
+            ), reverse=True)
+            
+            logger.info(f"找到{len(extracted_urls)}个候选URL，选择: {extracted_urls[0]}")
+            return extracted_urls[0]
+        
+        # 所有方法都失败
         logger.warning("无法从账户数据中提取有效的元数据URL")
         return "http://default-agent-url.com"
         
@@ -651,6 +673,9 @@ def validate_and_process_metadata_url(url: str) -> str:
             logger.warning("元数据URL为空")
             return "http://default-agent-url.com"
         
+        # 记录原始URL，方便调试
+        logger.info(f"处理原始URL: '{url}'")
+        
         # 规范化URL
         url = url.strip()
         
@@ -665,6 +690,18 @@ def validate_and_process_metadata_url(url: str) -> str:
             # 添加默认前缀
             url = "http://" + url
         
+        # 处理URL中的非法字符
+        from urllib.parse import urlparse, urlunparse
+        
+        # 解析URL
+        try:
+            parsed = urlparse(url)
+            # 重新组装URL，确保格式正确
+            url = urlunparse(parsed)
+            logger.info(f"解析后的URL: {url}")
+        except Exception as parse_error:
+            logger.warning(f"URL解析错误: {parse_error}, 使用原始URL")
+        
         # 检查是否是IP地址形式的URL (如http://8.214.38.69:10003/.well-known/agent.json)
         # 这种情况下保留原始URL
         import re
@@ -677,7 +714,7 @@ def validate_and_process_metadata_url(url: str) -> str:
                 return base_url
             return url
             
-        # 检查是否是arweave.net的URL，如果是则保留
+        # 检查是否是arweave.net的URL，如果是则保留完整URL
         if "arweave.net" in url:
             logger.info(f"检测到arweave.net URL: {url}")
             return url
@@ -687,10 +724,26 @@ def validate_and_process_metadata_url(url: str) -> str:
             base_url = url.split("/.well-known/agent.json")[0]
             logger.info(f"从完整agent.json URL中提取基本URL: {base_url}")
             return base_url
+        
+        # 处理特殊情况：如果URL以大写HTTP开头
+        if url.upper().startswith("HTTP://") and not url.startswith("http://"):
+            url = "http://" + url[5:]
+            logger.info(f"修正大写HTTP前缀: {url}")
+        elif url.upper().startswith("HTTPS://") and not url.startswith("https://"):
+            url = "https://" + url[6:]
+            logger.info(f"修正大写HTTPS前缀: {url}")
+        
+        # 确保URL不含空格
+        url = url.replace(" ", "")
+        
+        # 记录最终处理后的URL
+        logger.info(f"最终处理后的URL: {url}")
             
         # 其他情况，返回原始URL
         return url
         
     except Exception as e:
         logger.error(f"处理元数据URL时出错: {e}")
+        import traceback
+        logger.error(f"错误详情: {traceback.format_exc()}")
         return "http://default-agent-url.com" 
