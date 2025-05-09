@@ -8,7 +8,7 @@ import json
 from typing import Any, Optional
 from fastapi import APIRouter
 from fastapi import Request, Response
-from common.types import Message, Task, FilePart, FileContent, TaskStatus, TaskState, Artifact
+from common.types import Message, Task, TextPart, DataPart, FilePart, FileContent, TaskStatus, TaskState, Artifact
 from .in_memory_manager import InMemoryFakeAgentManager
 from .application_manager import ApplicationManager
 from .adk_host_manager import ADKHostManager, get_message_id

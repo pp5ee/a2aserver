@@ -314,7 +314,7 @@ class ADKHostManager(ApplicationManager):
         print(f"消息 {message_id} 处理超时")
         error_msg = Message(
           id=f"timeout_{message_id}",
-          role="system",
+          role="agent",
           parts=[TextPart(text="消息处理超时，请稍后重试")],
           metadata={
             'conversation_id': conversation_id,
@@ -331,7 +331,7 @@ class ADKHostManager(ApplicationManager):
         print(f"错误详情: {traceback.format_exc()}")
         error_msg = Message(
           id=f"error_{message_id}",
-          role="system",
+          role="agent",
           parts=[TextPart(text=f"处理消息时出错: {str(e)}")],
           metadata={
             'conversation_id': conversation_id,
