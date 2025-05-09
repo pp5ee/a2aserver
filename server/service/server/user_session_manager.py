@@ -708,16 +708,32 @@ class UserSessionManager:
             logger.error(f"获取用户会话时出错: {err}")
             return []
             
-    def get_conversation_messages(self, conversation_id: str, limit: int = 100):
-        """获取会话的所有消息记录"""
+    def get_conversation_messages(self, conversation_id: str, wallet_address: str = None, limit: int = 100):
+        """获取会话的所有消息记录
+        
+        Args:
+            conversation_id: 会话ID
+            wallet_address: 钱包地址，如果提供则确保消息属于该用户
+            limit: 返回消息的最大数量
+            
+        Returns:
+            list: 消息列表
+        """
         if not conversation_id:
             return []
             
         if self._memory_mode:
             # 内存模式下遍历所有用户，查找会话所属
-            for wallet_address, host_manager in self._host_managers.items():
+            for user_wallet, host_manager in self._host_managers.items():
+                # 如果指定了钱包地址，只查找该用户的会话
+                if wallet_address and user_wallet != wallet_address:
+                    continue
+                    
                 conversation = host_manager.get_conversation(conversation_id)
                 if conversation:
+                    # 如果指定了限制，只返回最新的limit条消息
+                    if limit and len(conversation.messages) > limit:
+                        return conversation.messages[-limit:]
                     return conversation.messages
             return []
             
@@ -728,14 +744,25 @@ class UserSessionManager:
             self._db_connection.ping(reconnect=True)
             cursor = self._db_connection.cursor()
             
-            # 查询会话的所有消息
-            cursor.execute("""
-            SELECT message_id, role, content, created_at
-            FROM messages 
-            WHERE conversation_id = %s
-            ORDER BY created_at ASC
-            LIMIT %s
-            """, (conversation_id, limit))
+            # 查询会话的所有消息，根据是否提供wallet_address构建不同的查询
+            if wallet_address:
+                # 同时使用wallet_address和conversation_id查询
+                cursor.execute("""
+                SELECT message_id, role, content, created_at
+                FROM messages 
+                WHERE conversation_id = %s AND wallet_address = %s
+                ORDER BY created_at ASC
+                LIMIT %s
+                """, (conversation_id, wallet_address, limit))
+            else:
+                # 只按conversation_id查询
+                cursor.execute("""
+                SELECT message_id, role, content, created_at
+                FROM messages 
+                WHERE conversation_id = %s
+                ORDER BY created_at ASC
+                LIMIT %s
+                """, (conversation_id, limit))
             
             messages = []
             for (message_id, role, content, created_at) in cursor.fetchall():
@@ -753,7 +780,7 @@ class UserSessionManager:
         except Exception as err:
             logger.error(f"获取会话消息时出错: {err}")
             return []
-            
+    
     def rebuild_conversation_from_history(self, wallet_address: str, conversation_id: str):
         """从历史记录重建会话"""
         if not wallet_address or not conversation_id:

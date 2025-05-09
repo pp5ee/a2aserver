@@ -359,8 +359,12 @@ class ConversationServer:
     # 如果是多用户模式且能获取到钱包地址，从数据库读取消息
     if self.use_multi_user and wallet_address:
       try:
-        # 从数据库获取消息
-        messages = self.user_session_manager.get_conversation_messages(conversation_id, limit=10)
+        # 从数据库获取消息，同时使用wallet_address和conversation_id确保查询正确
+        messages = self.user_session_manager.get_conversation_messages(
+            conversation_id=conversation_id,
+            wallet_address=wallet_address,
+            limit=10
+        )
         if messages:
           # 将数据库格式的消息转换为Message对象
           from common.types import Message, TextPart, DataPart, FilePart, FileContent
