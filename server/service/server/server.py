@@ -349,12 +349,90 @@ class ConversationServer:
     message_data = await request.json()
     conversation_id = message_data['params']
     
+    # 获取用户钱包地址
+    wallet_address = self._get_wallet_address(request)
+    
+    # 如果没有获取到钱包地址，从会话ID查询对应的钱包地址
+    if not wallet_address and self.use_multi_user:
+      wallet_address = self.user_session_manager.get_conversation_wallet_address(conversation_id)
+    
+    # 如果是多用户模式且能获取到钱包地址，从数据库读取消息
+    if self.use_multi_user and wallet_address:
+      try:
+        # 从数据库获取消息
+        messages = self.user_session_manager.get_conversation_messages(conversation_id, limit=10)
+        if messages:
+          # 将数据库格式的消息转换为Message对象
+          from common.types import Message, TextPart, DataPart, FilePart, FileContent
+          converted_messages = []
+          
+          for msg_data in messages:
+            try:
+              # 从内容构建消息对象
+              content = msg_data.get('content', {})
+              
+              # 创建消息对象
+              if 'parts' in content:
+                parts = []
+                for part_data in content.get('parts', []):
+                  # 根据不同类型创建不同的Part对象
+                  if isinstance(part_data, dict):
+                    part_type = part_data.get('type')
+                    
+                    if part_type == 'text' and 'text' in part_data:
+                      parts.append(TextPart(text=part_data['text']))
+                    
+                    elif part_type == 'data' and 'data' in part_data:
+                      parts.append(DataPart(data=part_data['data']))
+                    
+                    elif part_type == 'file' and 'file' in part_data:
+                      file_content = FileContent(**part_data['file'])
+                      parts.append(FilePart(file=file_content))
+                
+                # 处理元数据
+                metadata = {'message_id': msg_data.get('message_id'), 'conversation_id': conversation_id}
+                if 'metadata' in content:
+                  for key, value in content.get('metadata', {}).items():
+                    metadata[key] = value
+                
+                # 创建消息对象
+                message = Message(
+                  role=msg_data.get('role', 'user'),
+                  parts=parts,
+                  metadata=metadata
+                )
+                
+                converted_messages.append(message)
+              else:
+                # 简单消息处理
+                message = Message(
+                  role=msg_data.get('role', 'user'),
+                  parts=[TextPart(text="无法显示消息内容")],
+                  metadata={'message_id': msg_data.get('message_id'), 'conversation_id': conversation_id}
+                )
+                converted_messages.append(message)
+                
+            except Exception as e:
+              logger.error(f"转换消息格式出错: {e}")
+          
+          # 返回处理后的消息
+          return ListMessageResponse(result=self.cache_content(converted_messages))
+      except Exception as e:
+        logger.error(f"从数据库读取消息时出错: {e}")
+    
+    # 如果不是多用户模式或无法从数据库获取，则使用原有的内存模式
     manager = self._get_user_manager(request)
     conversation = manager.get_conversation(conversation_id)
     
     if conversation:
-      return ListMessageResponse(result=self.cache_content(
-          conversation.messages))
+      # 限制返回最新的10条消息
+      if hasattr(conversation, 'messages') and len(conversation.messages) > 10:
+        messages_to_return = conversation.messages[-10:]
+      else:
+        messages_to_return = conversation.messages
+      
+      return ListMessageResponse(result=self.cache_content(messages_to_return))
+    
     return ListMessageResponse(result=[])
 
   def cache_content(self, messages: list[Message]):
