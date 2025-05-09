@@ -1371,6 +1371,9 @@ class UserSessionManager:
             
             cursor = self._db_connection.cursor()
             
+            # 收集需要检查状态的代理URL
+            agents_to_check = []
+            
             for sub in subscriptions:
                 try:
                     nft_mint_id = sub.get('nft_mint_id')
@@ -1405,17 +1408,19 @@ class UserSessionManager:
                     existing = cursor.fetchone()
                     
                     if existing:
-                        # 更新现有记录
+                        # 更新现有记录，暂时保留is_online状态为unknown，后续立即检查
                         logger.info(f"更新现有NFT订阅: mint={nft_mint_id}, url={agent_url}")
                         try:
                             cursor.execute(
                                 """
                                 UPDATE user_agents 
-                                SET agent_url = %s, expire_at = %s, is_online = 'unknown' 
+                                SET agent_url = %s, expire_at = %s 
                                 WHERE wallet_address = %s AND nft_mint_id = %s
                                 """,
                                 (agent_url, expire_at, wallet_address, nft_mint_id)
                             )
+                            # 添加到需要检查的代理列表
+                            agents_to_check.append((existing[0], agent_url))
                         except Exception as update_err:
                             logger.error(f"更新NFT订阅记录失败: {update_err}")
                             # 尝试使用字符串格式
@@ -1424,17 +1429,19 @@ class UserSessionManager:
                                 cursor.execute(
                                     """
                                     UPDATE user_agents 
-                                    SET agent_url = %s, expire_at = %s, is_online = 'unknown' 
+                                    SET agent_url = %s, expire_at = %s 
                                     WHERE wallet_address = %s AND nft_mint_id = %s
                                     """,
                                     (agent_url, expire_at_str, wallet_address, nft_mint_id)
                                 )
                                 logger.info(f"使用字符串格式更新成功: {expire_at_str}")
+                                # 添加到需要检查的代理列表
+                                agents_to_check.append((existing[0], agent_url))
                             except Exception as retry_err:
                                 logger.error(f"使用字符串格式更新也失败: {retry_err}")
                                 continue
                     else:
-                        # 插入新记录
+                        # 插入新记录，暂时设置is_online为unknown，但后续立即检查
                         logger.info(f"插入新NFT订阅: mint={nft_mint_id}, url={agent_url}")
                         try:
                             cursor.execute(
@@ -1445,6 +1452,13 @@ class UserSessionManager:
                                 """,
                                 (wallet_address, agent_url, nft_mint_id, expire_at)
                             )
+                            # 获取插入的记录ID
+                            cursor.execute(
+                                "SELECT LAST_INSERT_ID()"
+                            )
+                            new_id = cursor.fetchone()[0]
+                            # 添加到需要检查的代理列表
+                            agents_to_check.append((new_id, agent_url))
                         except Exception as insert_err:
                             logger.error(f"插入NFT订阅记录失败: {insert_err}")
                             # 尝试使用字符串格式
@@ -1459,6 +1473,13 @@ class UserSessionManager:
                                     (wallet_address, agent_url, nft_mint_id, expire_at_str)
                                 )
                                 logger.info(f"使用字符串格式插入成功: {expire_at_str}")
+                                # 获取插入的记录ID
+                                cursor.execute(
+                                    "SELECT LAST_INSERT_ID()"
+                                )
+                                new_id = cursor.fetchone()[0]
+                                # 添加到需要检查的代理列表
+                                agents_to_check.append((new_id, agent_url))
                             except Exception as retry_err:
                                 logger.error(f"使用字符串格式插入也失败: {retry_err}")
                                 continue
@@ -1466,6 +1487,7 @@ class UserSessionManager:
                     logger.error(f"处理单个订阅时出错: {sub_err}")
                     continue
             
+            # 提交事务，确保所有代理记录已存储
             try:
                 self._db_connection.commit()
                 logger.info(f"成功更新用户 {wallet_address} 的订阅信息")
@@ -1475,6 +1497,64 @@ class UserSessionManager:
                     self._db_connection.rollback()
                 except Exception:
                     pass
+                # 如果提交失败，清空需要检查的代理列表
+                agents_to_check = []
+            
+            # 立即检查代理状态，不需要等待定时任务
+            if agents_to_check:
+                logger.info(f"立即检查 {len(agents_to_check)} 个新添加/更新的代理状态")
+                status_updates = []
+                
+                # 实例化AgentStatusChecker以便使用其检查方法
+                status_checker = self.agent_status_checker
+                
+                # 检查每个代理的状态
+                for agent_id, agent_url in agents_to_check:
+                    try:
+                        # 直接调用状态检查器的方法检查代理状态
+                        is_online, agent_card = status_checker._check_agent_status(agent_url)
+                        logger.info(f"代理 {agent_url} 初始检查结果: {is_online}")
+                        
+                        # 收集更新信息
+                        if agent_card:
+                            agent_card_json = json.dumps(agent_card)
+                            status_updates.append((is_online, agent_card_json, agent_id))
+                        else:
+                            status_updates.append((is_online, None, agent_id))
+                    except Exception as e:
+                        logger.error(f"初始检查代理 {agent_url} 状态时出错: {e}")
+                        continue
+                
+                # 批量更新代理状态
+                if status_updates:
+                    try:
+                        # 区分有卡片和无卡片的更新
+                        with_cards = [(status, card, id) for status, card, id in status_updates if card is not None]
+                        without_cards = [(status, id) for status, card, id in status_updates if card is None]
+                        
+                        # 更新带卡片数据的代理
+                        if with_cards:
+                            cursor.executemany(
+                                "UPDATE user_agents SET is_online = %s, agent_card = %s WHERE id = %s",
+                                with_cards
+                            )
+                        
+                        # 更新不带卡片数据的代理
+                        if without_cards:
+                            cursor.executemany(
+                                "UPDATE user_agents SET is_online = %s WHERE id = %s",
+                                without_cards
+                            )
+                        
+                        # 提交更新
+                        self._db_connection.commit()
+                        logger.info(f"成功更新 {len(status_updates)} 个代理的初始状态")
+                    except Exception as update_err:
+                        logger.error(f"更新代理初始状态时出错: {update_err}")
+                        try:
+                            self._db_connection.rollback()
+                        except Exception:
+                            pass
             
             cursor.close()
             
