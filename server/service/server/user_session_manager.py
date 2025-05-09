@@ -1899,7 +1899,7 @@ class UserSubscriptionChecker:
             self.user_timers[wallet_address] = timer_thread
             timer_thread.start()
             
-            logger.info(f"为用户 {wallet_address} 启动NFT订阅检查定时任务")
+            logger.debug(f"为用户 {wallet_address} 启动NFT订阅检查定时任务")
     
     def update_user_activity(self, wallet_address: str):
         """更新用户最后活跃时间"""
@@ -1915,7 +1915,7 @@ class UserSubscriptionChecker:
         with self.lock:
             if wallet_address in self.stop_flags:
                 self.stop_flags[wallet_address] = True
-                logger.info(f"标记停止用户 {wallet_address} 的NFT订阅检查定时任务")
+                logger.debug(f"标记停止用户 {wallet_address} 的NFT订阅检查定时任务")
     
     def _subscription_checker_task(self, wallet_address: str):
         """订阅检查定时任务的执行函数"""
@@ -1923,7 +1923,7 @@ class UserSubscriptionChecker:
             # 检查是否需要停止
             with self.lock:
                 if self.stop_flags.get(wallet_address, True):
-                    logger.info(f"用户 {wallet_address} 的NFT订阅检查定时任务已停止")
+                    logger.debug(f"用户 {wallet_address} 的NFT订阅检查定时任务已停止")
                     return
                 
                 # 检查用户是否超过30分钟未活跃
@@ -1931,7 +1931,7 @@ class UserSubscriptionChecker:
                 if last_active:
                     inactive_duration = datetime.datetime.now() - last_active
                     if inactive_duration.total_seconds() > 30 * 60:  # 30分钟
-                        logger.info(f"用户 {wallet_address} 超过30分钟未活跃，停止NFT订阅检查")
+                        logger.debug(f"用户 {wallet_address} 超过30分钟未活跃，停止NFT订阅检查")
                         self.stop_flags[wallet_address] = True
                         return
             
@@ -1983,17 +1983,17 @@ class UserSubscriptionChecker:
                 time.sleep(10)
                 with self.lock:
                     if self.stop_flags.get(wallet_address, True):
-                        logger.info(f"用户 {wallet_address} 的NFT订阅检查定时任务被中途停止")
+                        logger.debug(f"用户 {wallet_address} 的NFT订阅检查定时任务被中途停止")
                         return
     
     async def _check_user_subscriptions(self, wallet_address: str):
         """检查用户的NFT订阅状态并更新数据库"""
-        logger.info(f"开始检查用户 {wallet_address} 的NFT订阅状态")
+        logger.debug(f"开始检查用户 {wallet_address} 的NFT订阅状态")
         
         # 调用用户会话管理器的方法来检查和更新订阅
         await self.user_session_manager.update_user_subscriptions(wallet_address)
         
-        logger.info(f"完成用户 {wallet_address} 的NFT订阅状态检查")
+        logger.debug(f"完成用户 {wallet_address} 的NFT订阅状态检查")
 
 class ExpiredAgentCleaner:
     """定时清理过期代理的任务管理器"""
@@ -2009,7 +2009,7 @@ class ExpiredAgentCleaner:
         """启动清理任务"""
         with self.lock:
             if self.timer_thread and self.timer_thread.is_alive():
-                logger.info("过期代理清理任务已在运行")
+                logger.debug("过期代理清理任务已在运行")
                 return
                 
             # 设置停止标志为False
@@ -2022,13 +2022,13 @@ class ExpiredAgentCleaner:
             )
             self.timer_thread.start()
             
-            logger.info(f"已启动过期代理清理任务，间隔: {self.interval}秒")
+            logger.debug(f"已启动过期代理清理任务，间隔: {self.interval}秒")
     
     def stop_cleaner(self):
         """停止清理任务"""
         with self.lock:
             self.stop_flag = True
-            logger.info("已标记停止过期代理清理任务")
+            logger.debug("已标记停止过期代理清理任务")
     
     def _cleaner_task(self):
         """清理任务的执行函数"""
@@ -2036,7 +2036,7 @@ class ExpiredAgentCleaner:
             # 检查是否需要停止
             with self.lock:
                 if self.stop_flag:
-                    logger.info("过期代理清理任务已停止")
+                    logger.debug("过期代理清理任务已停止")
                     return
             
             try:
@@ -2148,7 +2148,7 @@ class AgentStatusChecker:
         """启动检查任务"""
         with self.lock:
             if self.timer_thread and self.timer_thread.is_alive():
-                logger.info("代理状态检查任务已在运行")
+                logger.debug("代理状态检查任务已在运行")
                 return
                 
             # 设置停止标志为False
@@ -2162,17 +2162,17 @@ class AgentStatusChecker:
             )
             self.timer_thread.start()
             
-            logger.info(f"已启动代理状态检查任务，间隔: {self.interval}秒")
+            logger.debug(f"已启动代理状态检查任务，间隔: {self.interval}秒")
     
     def stop_checker(self):
         """停止检查任务"""
         with self.lock:
             if not self.timer_thread or not self.timer_thread.is_alive():
-                logger.info("代理状态检查任务未在运行")
+                logger.debug("代理状态检查任务未在运行")
                 return
                 
             self.stop_flag = True
-            logger.info("已标记停止代理状态检查任务")
+            logger.debug("已标记停止代理状态检查任务")
             
             # 等待线程结束，最多等待10秒
             self.timer_thread.join(timeout=10)
@@ -2189,7 +2189,7 @@ class AgentStatusChecker:
         # 确保完全停止
         time.sleep(1)
         self.start_checker()
-        logger.info("代理状态检查任务已重启")
+        logger.debug("代理状态检查任务已重启")
     
     def _checker_task(self):
         """检查任务的执行函数"""
@@ -2199,7 +2199,7 @@ class AgentStatusChecker:
             # 检查是否需要停止
             with self.lock:
                 if self.stop_flag:
-                    logger.info("代理状态检查任务已停止")
+                    logger.debug("代理状态检查任务已停止")
                     return
             
             # 精确控制执行间隔
@@ -2241,7 +2241,7 @@ class AgentStatusChecker:
     
     def _check_all_agents(self):
         """检查所有代理的状态"""
-        logger.info("开始检查所有代理状态")
+        logger.debug("开始检查所有代理状态")
         
         if self.user_session_manager._memory_mode:
             logger.warning("内存模式下不支持代理状态检查")
@@ -2257,7 +2257,7 @@ class AgentStatusChecker:
             cursor.execute("SELECT id, agent_url, is_online FROM user_agents")
             agents = cursor.fetchall()
             
-            logger.info(f"找到 {len(agents)} 个代理需要检查状态")
+            logger.debug(f"找到 {len(agents)} 个代理需要检查状态")
             
             # 批量更新状态，避免频繁提交事务
             updates = []
@@ -2286,7 +2286,7 @@ class AgentStatusChecker:
             
             # 批量执行更新，只在有状态变化时
             if updates:
-                logger.info(f"有 {len(updates)} 个代理状态需要更新")
+                logger.debug(f"有 {len(updates)} 个代理状态需要更新")
                 with_cards = [(status, card, id) for status, card, id in updates if card is not None]
                 without_cards = [(status, id) for status, card, id in updates if card is None]
                 
@@ -2307,11 +2307,11 @@ class AgentStatusChecker:
                 # 提交事务
                 self.user_session_manager._db_connection.commit()
             else:
-                logger.info("没有代理状态变化，跳过数据库更新")
+                logger.debug("没有代理状态变化，跳过数据库更新")
             
             cursor.close()
             
-            logger.info("完成所有代理状态检查")
+            logger.debug("完成所有代理状态检查")
             
         except Exception as e:
             logger.error(f"检查代理状态过程中出错: {e}")
@@ -2373,7 +2373,7 @@ class AgentStatusChecker:
             
             # 进行重试
             for retry in range(self.max_retries):
-                logger.info(f"代理 {agent_url} 检查失败，进行第 {retry+1}/{self.max_retries} 次重试")
+                logger.debug(f"代理 {agent_url} 检查失败，进行第 {retry+1}/{self.max_retries} 次重试")
                 
                 # 等待一段时间后重试
                 time.sleep(self.retry_delay)
@@ -2389,7 +2389,7 @@ class AgentStatusChecker:
                     # 如果连续成功多次，标记为稳定代理
                     if agent_url not in self.stable_agents and self.agent_failures.get(agent_url, 0) == 0:
                         self.stable_agents.add(agent_url)
-                        logger.info(f"代理 {agent_url} 被标记为稳定代理")
+                        logger.debug(f"代理 {agent_url} 被标记为稳定代理")
                     
                     return retry_result
         
@@ -2401,11 +2401,11 @@ class AgentStatusChecker:
             # 如果连续成功多次，标记为稳定代理
             if agent_url not in self.stable_agents and self.agent_failures.get(agent_url, 0) == 0:
                 self.stable_agents.add(agent_url)
-                logger.info(f"代理 {agent_url} 被标记为稳定代理")
+                logger.debug(f"代理 {agent_url} 被标记为稳定代理")
         # 如果连续失败次数过多，从稳定代理列表中移除
         elif agent_url in self.stable_agents and self.agent_failures.get(agent_url, 0) >= 3:
             self.stable_agents.remove(agent_url)
-            logger.info(f"代理 {agent_url} 因连续失败而从稳定代理列表中移除")
+            logger.debug(f"代理 {agent_url} 因连续失败而从稳定代理列表中移除")
         
         return result
     
@@ -2422,11 +2422,11 @@ class AgentStatusChecker:
         try:
             import requests
             
-            logger.info(f"正在检查代理状态: {agent_url}")
+            logger.debug(f"正在检查代理状态: {agent_url}")
             
             # 构建.well-known/agent.json URL
             agent_json_url = self._build_agent_json_url(agent_url)
-            logger.info(f"请求agent.json URL: {agent_json_url}")
+            logger.debug(f"请求agent.json URL: {agent_json_url}")
             
             # 设置较短的超时时间，避免长时间等待
             # 连接超时2秒，读取超时3秒
@@ -2439,31 +2439,31 @@ class AgentStatusChecker:
                     
                     # 验证是否是有效的agent card
                     if isinstance(agent_card, dict) and 'name' in agent_card and 'description' in agent_card:
-                        logger.info(f"代理 {agent_url} 在线，获取到有效的agent card")
+                        logger.debug(f"代理 {agent_url} 在线，获取到有效的agent card")
                         return 'yes', agent_card
                     else:
-                        logger.warning(f"代理 {agent_url} 在线，但返回的不是有效的agent card格式")
+                        logger.debug(f"代理 {agent_url} 在线，但返回的不是有效的agent card格式")
                         return 'yes', None
                 except Exception as json_err:
                     # 响应不是有效的JSON
-                    logger.warning(f"代理 {agent_url} 返回的不是有效的JSON: {json_err}")
+                    logger.debug(f"代理 {agent_url} 返回的不是有效的JSON: {json_err}")
                     return 'yes', None
             else:
                 # 响应状态码不是200
-                logger.warning(f"代理 {agent_url} 返回状态码: {response.status_code}")
+                logger.debug(f"代理 {agent_url} 返回状态码: {response.status_code}")
                 return 'no', None
                 
         except requests.exceptions.Timeout:
             # 请求超时
-            logger.warning(f"请求代理 {agent_url} 超时")
+            logger.debug(f"请求代理 {agent_url} 超时")
             return 'no', None
         except requests.exceptions.ConnectionError:
             # 连接错误
-            logger.warning(f"连接代理 {agent_url} 失败")
+            logger.debug(f"连接代理 {agent_url} 失败")
             return 'no', None
         except Exception as e:
             # 其他错误
-            logger.error(f"请求代理 {agent_url} 时发生未知错误: {e}")
+            logger.warning(f"请求代理 {agent_url} 时发生未知错误: {e}")
             return 'no', None
     
     def _build_agent_json_url(self, agent_url):

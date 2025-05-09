@@ -72,7 +72,7 @@ export default createStore<RootState>({
     messageAliases: {},
     completedForms: {},
     formResponses: {},
-    pollingInterval: 1,
+    pollingInterval: 5,
     apiKey: '',
     usesVertexAi: false,
     apiKeyDialogOpen: false,
