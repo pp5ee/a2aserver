@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import logging
 import time
 import base64
@@ -579,7 +580,7 @@ async def get_nft_metadata_url_direct(rpc_url: str, agent_nft_pda: str) -> str:
                         from urllib.parse import urlparse
                         parsed_url = urlparse(raw_agent_url)
                         if parsed_url.scheme and parsed_url.netloc:
-                    return raw_agent_url
+                            return raw_agent_url
                     except Exception as url_error:
                         logger.warning(f"URL验证失败: {url_error}")
                         continue
@@ -626,7 +627,7 @@ async def get_nft_metadata_url_direct(rpc_url: str, agent_nft_pda: str) -> str:
         
         # 所有方法都失败，返回默认URL
         logger.warning("无法从账户数据中提取有效的元数据URL")
-            return "http://default-agent-url.com"
+        return "http://default-agent-url.com"
         
     except Exception as e:
         logger.error(f"获取NFT元数据URL时出错: {e}")
