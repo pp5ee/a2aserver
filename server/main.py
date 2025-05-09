@@ -332,15 +332,7 @@ def task_page():
 # Setup the server global objects
 app = FastAPI()
 
-# 添加CORS中间件以支持跨域请求 - 必须最先添加
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # 允许所有来源，生产环境应该限制
-    allow_credentials=True,
-    allow_methods=["*"],  # 允许所有方法
-    allow_headers=["*"],  # 允许所有请求头
-    expose_headers=["*"]  # 允许暴露所有响应头
-)
+
 
 router = APIRouter()
 agent_server = ConversationServer(router)
@@ -693,7 +685,15 @@ async def get_agent_status(request: Request, wallet_address: Optional[str] = Non
         "success": True,
         "data": agent_status
     }
-
+# 添加CORS中间件以支持跨域请求 - 必须最先添加
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 允许所有来源，生产环境应该限制
+    allow_credentials=True,
+    allow_methods=["*"],  # 允许所有方法
+    allow_headers=["*"],  # 允许所有请求头
+    expose_headers=["*"]  # 允许暴露所有响应头
+)
 app.mount(
     "/",
     WSGIMiddleware(
