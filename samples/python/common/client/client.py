@@ -23,13 +23,14 @@ import json
 
 
 class A2AClient:
-    def __init__(self, agent_card: AgentCard = None, url: str = None):
+    def __init__(self, agent_card: AgentCard = None, url: str = None, headers: dict = None):
         if agent_card:
             self.url = agent_card.url
         elif url:
             self.url = url
         else:
             raise ValueError("Must provide either agent_card or url")
+        self.headers = headers or {}
 
     async def send_task(self, payload: dict[str, Any]) -> SendTaskResponse:
         request = SendTaskRequest(params=payload)
@@ -41,7 +42,7 @@ class A2AClient:
         request = SendTaskStreamingRequest(params=payload)
         with httpx.Client(timeout=None) as client:
             with connect_sse(
-                client, "POST", self.url, json=request.model_dump()
+                client, "POST", self.url, json=request.model_dump(), headers=self.headers
             ) as event_source:
                 try:
                     for sse in event_source.iter_sse():
@@ -56,7 +57,7 @@ class A2AClient:
             try:
                 # Image generation could take time, adding timeout
                 response = await client.post(
-                    self.url, json=request.model_dump(), timeout=30
+                    self.url, json=request.model_dump(), timeout=30, headers=self.headers
                 )
                 response.raise_for_status()
                 return response.json()

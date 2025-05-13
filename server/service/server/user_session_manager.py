@@ -229,12 +229,12 @@ class UserSessionManager:
             logger.error(f"创建表失败: {err}")
             
     
-    def get_host_manager(self, wallet_address: str) -> ADKHostManager:
+    def get_host_manager(self, wallet_address: str, headers: dict = None) -> ADKHostManager:
         """获取指定用户的Host Manager实例，如果不存在则创建新实例"""
         if not wallet_address:
             logger.warning("尝试获取无效钱包地址的Host Manager")
             # 返回一个临时Host Manager用于匿名访问
-            return ADKHostManager()
+            return ADKHostManager(headers=headers)
         
         # 确保用户存在
         self._ensure_user_exists(wallet_address)
@@ -252,7 +252,7 @@ class UserSessionManager:
             uses_vertex_ai = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").upper() == "TRUE"
             
             # 创建新的ADKHostManager实例，使用环境变量中的API key
-            host_manager = ADKHostManager(api_key=api_key, uses_vertex_ai=uses_vertex_ai)
+            host_manager = ADKHostManager(api_key=api_key, uses_vertex_ai=uses_vertex_ai, headers=headers)
             
             # 恢复用户之前注册的代理
             self._restore_user_agents(wallet_address, host_manager)

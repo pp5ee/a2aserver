@@ -1,6 +1,7 @@
 """A UI solution and host service to interact with the agent framework.
 run:
   uv main.py
+  SSL_CERT_DIR=/etc/ssl/certs uv run main.py
 """
 import asyncio
 import os
@@ -628,42 +629,7 @@ async def jsonp_middleware(request: Request, call_next):
     
     return response
 
-@app.get("/api/metadata-proxy/{path:path}")
-async def metadata_proxy(path: str, request: Request):
-    """
-    proxy metadata request, solve CORS problem
-    """
-    import httpx
-    
-    # 获取完整的URL路径，包括查询参数
-    full_path = request.url.path.replace("/api/metadata-proxy/", "")
-    query_string = request.url.query.decode()
-    if query_string:
-        full_path = f"{full_path}?{query_string}"
-    
-    # 构建目标URL
-    target_url = f"http://8.214.38.69:10003/{full_path}"
-    
-    try:
-        logger.info(f"proxy request: {target_url}")
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(target_url)
-            
-            # 获取内容类型
-            content_type = response.headers.get("content-type", "application/json")
-            
-            # 返回响应
-            return Response(
-                content=response.content,
-                status_code=response.status_code,
-                headers={"content-type": content_type}
-            )
-    except Exception as e:
-        logger.error(f"proxy request failed: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"proxy request failed: {str(e)}"}
-        )
+
 
 @app.get("/api/agent/status")
 async def get_agent_status(request: Request, wallet_address: Optional[str] = None):
@@ -723,7 +689,7 @@ if __name__ == "__main__":
         port=port,
         reload=os.environ.get("DEBUG_MODE", "") == "true",
         reload_includes=["*.py", "*.js"] if os.environ.get("DEBUG_MODE", "") == "true" else None,
-        workers=int(os.environ.get("UVICORN_WORKERS", "4")),  # 可通过环境变量调整工作进程数
+        workers=int(os.environ.get("UVICORN_WORKERS", "2")),  # 可通过环境变量调整工作进程数
         timeout_keep_alive=120,  # 增加keep-alive超时时间
         timeout_graceful_shutdown=30,  # 设置优雅关闭的超时时间
         loop="uvloop",  # 使用uvloop作为事件循环实现，比asyncio默认循环更高效

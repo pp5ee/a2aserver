@@ -52,7 +52,7 @@ class ADKHostManager(ApplicationManager):
   _agents: list[AgentCard]
   _task_map: dict[str, str]
 
-  def __init__(self, api_key: str = "", uses_vertex_ai: bool = False):
+  def __init__(self, api_key: str = "", uses_vertex_ai: bool = False, headers: dict = None):
     self._conversations = []
     self._messages = []
     self._tasks = []
@@ -63,7 +63,8 @@ class ADKHostManager(ApplicationManager):
     self._session_service = InMemorySessionService()
     self._artifact_service = InMemoryArtifactService()
     self._memory_service = InMemoryMemoryService()
-    self._host_agent = HostAgent([], self.task_callback)
+    self.headers = headers or {}
+    self._host_agent = HostAgent([], self.task_callback, headers=self.headers)
     self.user_id = "test_user"
     self.app_name = "A2A"
     self.api_key = api_key or os.environ.get("GOOGLE_API_KEY", "")
@@ -194,7 +195,7 @@ class ADKHostManager(ApplicationManager):
               session_id=conversation_id)
       except Exception as e:
         # 会话获取失败，记录错误并创建新会话
-        print(f"获取会话失败: {e}，创建新会话")
+        
         session = self._session_service.create_session(
             app_name=self.app_name,
             user_id=self.user_id,

@@ -157,7 +157,20 @@ class ConversationServer:
     
   def _get_user_manager(self, request: Request) -> ApplicationManager:
     """获取用户特定的管理器"""
+    # 获取鉴权头信息
+    headers = {}
+    if 'X-Solana-PublicKey' in request.headers:
+      headers['X-Solana-PublicKey'] = request.headers.get('X-Solana-PublicKey')
+    if 'X-Solana-Nonce' in request.headers:
+      headers['X-Solana-Nonce'] = request.headers.get('X-Solana-Nonce')
+    if 'X-Solana-Signature' in request.headers:
+      headers['X-Solana-Signature'] = request.headers.get('X-Solana-Signature')
+    
     if not self.use_multi_user:
+      # 如果单用户模式，更新默认manager的headers
+      if isinstance(self.default_manager, ADKHostManager):
+        self.default_manager.headers = headers
+        self.default_manager._host_agent.headers = headers
       return self.default_manager
       
     wallet_address = self._get_wallet_address(request)
@@ -168,7 +181,15 @@ class ConversationServer:
     # 更新用户活跃状态并启动订阅检查
     self._update_user_activity(wallet_address)
       
-    return self.user_session_manager.get_host_manager(wallet_address)
+    # 获取用户特定的manager
+    manager = self.user_session_manager.get_host_manager(wallet_address, headers=headers)
+    
+    # 更新manager的headers
+    if isinstance(manager, ADKHostManager):
+      manager.headers = headers
+      manager._host_agent.headers = headers
+      
+    return manager
     
   def _update_user_activity(self, wallet_address: str):
     """更新用户活跃状态并启动订阅检查"""

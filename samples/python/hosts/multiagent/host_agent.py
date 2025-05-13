@@ -43,19 +43,21 @@ class HostAgent:
   def __init__(
       self,
       remote_agent_addresses: List[str],
-      task_callback: TaskUpdateCallback | None = None
+      task_callback: TaskUpdateCallback | None = None,
+      headers: dict = None
   ):
     logging.info(f"Initializing HostAgent, remote agent address count: {len(remote_agent_addresses)}")
     self.task_callback = task_callback
     self.remote_agent_connections: dict[str, RemoteAgentConnections] = {}
     self.cards: dict[str, AgentCard] = {}
+    self.headers = headers or {}
     for address in remote_agent_addresses:
       logging.info(f"Processing remote agent address: {address}")
       try:
         card_resolver = A2ACardResolver(address)
         card = card_resolver.get_agent_card()
         logging.info(f"Successfully parsed agent card: {card.name}, URL: {card.url}")
-        remote_connection = RemoteAgentConnections(card)
+        remote_connection = RemoteAgentConnections(card, headers=self.headers)
         self.remote_agent_connections[card.name] = remote_connection
         self.cards[card.name] = card
       except Exception as e:
@@ -70,7 +72,7 @@ class HostAgent:
 
   def register_agent_card(self, card: AgentCard):
     logging.info(f"Registering agent card: {card.name}, URL: {card.url}")
-    remote_connection = RemoteAgentConnections(card)
+    remote_connection = RemoteAgentConnections(card, headers=self.headers)
     self.remote_agent_connections[card.name] = remote_connection
     self.cards[card.name] = card
     agent_info = []
