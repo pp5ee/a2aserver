@@ -73,7 +73,7 @@ server {
     }
     
     # 禁止随机路径格式的探测请求
-    location ~ ^/[a-zA-Z0-9]{10,}/api/ {
+    location ~ "^/[a-zA-Z0-9]{10,}/api/" {
         deny all;
         return 404;
     }
