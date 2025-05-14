@@ -79,7 +79,9 @@ python main.py
 
 Nginx的WebSocket配置允许前端通过WSS安全连接与后端WebSocket服务通信：
 
-1. **支持的路径**: `/api/ws`
+1. **支持的路径**: 
+   - 主要路径: `/api/ws`（推荐使用）
+   - 兼容旧版路径: `/ws`（向后兼容，自动转发到 `/api/ws`）
 2. **协议升级**: 配置了必要的 `Upgrade` 和 `Connection` 头
 3. **超时设置**: 
    - `proxy_read_timeout`: 300秒
@@ -99,6 +101,8 @@ const wsUrl = `${wsProtocol}//${wsHost}/api/ws`;
 
 const socket = new WebSocket(wsUrl);
 ```
+
+**注意**: 为了向后兼容，我们同时支持 `/ws` 和 `/api/ws` 两个路径。新开发的应用应使用 `/api/ws` 路径，以保持与API路径的一致性。
 
 ## 验证配置
 

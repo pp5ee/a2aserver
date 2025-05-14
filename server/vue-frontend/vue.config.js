@@ -20,7 +20,7 @@ module.exports = defineConfig({
     },
     // 客户端配置
     client: {
-      webSocketURL: 'auto://0.0.0.0:0/ws',
+      webSocketURL: 'auto://0.0.0.0:0/api/ws',
       overlay: {
         errors: true,
         warnings: false,
