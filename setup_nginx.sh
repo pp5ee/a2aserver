@@ -157,7 +157,7 @@ server {
         # set $cors_origin $http_origin;
         
         # 如果不需要限制域名，直接放开所有域
-        add_header 'Access-Control-Allow-Origin' '*' always;
+        # add_header 'Access-Control-Allow-Origin' '*' always;
         
         # 或者使用动态允许的方式
         #add_header 'Access-Control-Allow-Origin' $cors_origin always;
