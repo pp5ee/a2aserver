@@ -30,6 +30,8 @@ class WebSocketManager:
         # 重试配置
         self.max_retries = 3
         self.retry_delay = 1.0  # 秒
+        # 地址映射，用于解决大小写敏感问题
+        self.address_mapping: Dict[str, str] = {}
     
     async def connect(self, websocket: WebSocket, wallet_address: str):
         """建立WebSocket连接"""
@@ -39,16 +41,35 @@ class WebSocketManager:
             
         await websocket.accept()
         
+        # 标准化钱包地址 - 保持原始大小写但记录映射
+        original_address = wallet_address
+        
         async with self.lock:
             # 使用原始地址作为key
-            if wallet_address not in self.active_connections:
-                self.active_connections[wallet_address] = set()
-            self.active_connections[wallet_address].add(websocket)
+            if original_address not in self.active_connections:
+                self.active_connections[original_address] = set()
+            self.active_connections[original_address].add(websocket)
             
-        logger.info(f"WebSocket连接建立: {wallet_address}, 当前连接数: {len(self.active_connections[wallet_address])}")
+            # 记录原始地址和小写地址的映射关系
+            lowercase_address = original_address.lower()
+            self.address_mapping[lowercase_address] = original_address
+            
+        logger.info(f"WebSocket连接建立: {original_address}, 当前连接数: {len(self.active_connections[original_address])}")
+        logger.debug(f"当前所有连接地址: {list(self.active_connections.keys())}")
         
         # 检查是否有待发送的消息
-        await self._send_pending_messages(wallet_address)
+        await self._send_pending_messages(original_address)
+        
+        # 同时检查小写版本的地址是否有待发送消息
+        if lowercase_address != original_address and lowercase_address in self.pending_messages:
+            logger.info(f"发现小写地址 {lowercase_address} 有待发送消息，转发到 {original_address}")
+            # 将小写地址的待发送消息移动到原始地址
+            if original_address not in self.pending_messages:
+                self.pending_messages[original_address] = []
+            self.pending_messages[original_address].extend(self.pending_messages[lowercase_address])
+            self.pending_messages[lowercase_address] = []
+            # 发送消息
+            await self._send_pending_messages(original_address)
     
     async def disconnect(self, websocket: WebSocket, wallet_address: str):
         """断开WebSocket连接"""
@@ -61,7 +82,11 @@ class WebSocketManager:
                 # 如果用户没有活跃连接，则删除该用户的记录
                 if not self.active_connections[wallet_address]:
                     del self.active_connections[wallet_address]
-                logger.info(f"WebSocket连接断开: {wallet_address}")
+                    # 如果小写映射存在，也删除它
+                    lowercase_address = wallet_address.lower()
+                    if lowercase_address in self.address_mapping and self.address_mapping[lowercase_address] == wallet_address:
+                        del self.address_mapping[lowercase_address]
+                logger.info(f"WebSocket连接断开: {wallet_address}, 剩余连接: {list(self.active_connections.keys())}")
     
     async def send_message(self, wallet_address: str, message: dict):
         """向指定用户发送消息"""
@@ -69,31 +94,45 @@ class WebSocketManager:
             logger.warning(f"无法发送WebSocket消息: 钱包地址为空")
             return
         
-        if wallet_address not in self.active_connections:
-            logger.warning(f"无法发送WebSocket消息: 找不到钱包地址 {wallet_address} 的活跃连接")
-            
-            # 额外记录当前所有活跃连接的地址，帮助调试
-            all_addresses = list(self.active_connections.keys())
-            if all_addresses:
-                logger.info(f"当前活跃连接的钱包地址: {all_addresses}")
-            
-            # 存储待发送消息，以便稍后连接建立时发送
-            self._store_pending_message(wallet_address, message)
-            return
+        # 尝试查找原始大小写的地址
+        original_address = wallet_address
+        lowercase_address = wallet_address.lower()
+        
+        # 如果提供的是小写地址，尝试找到原始大小写地址
+        if lowercase_address in self.address_mapping:
+            original_address = self.address_mapping[lowercase_address]
+            logger.debug(f"找到地址映射: {wallet_address} -> {original_address}")
+        
+        # 检查是否有该地址的活跃连接
+        if original_address not in self.active_connections:
+            # 再尝试直接用小写地址查找（兼容性）
+            if lowercase_address in self.active_connections:
+                original_address = lowercase_address
+                logger.debug(f"找到小写地址的连接: {lowercase_address}")
+            else:
+                logger.warning(f"无法发送WebSocket消息: 找不到钱包地址的活跃连接. 原地址={wallet_address}, 检查地址={original_address}")
+                logger.info(f"当前活跃连接: {list(self.active_connections.keys())}")
+                logger.info(f"当前地址映射: {self.address_mapping}")
+                
+                # 存储待发送消息，以便稍后连接建立时发送
+                self._store_pending_message(original_address, message)
+                return
         
         # 序列化消息
         message_str = json.dumps(message)
         
         # 获取用户的所有连接
-        connections = self.active_connections.get(wallet_address, set())
+        connections = self.active_connections.get(original_address, set())
         if not connections:
-            logger.warning(f"钱包地址 {wallet_address} 没有活跃的WebSocket连接")
+            logger.warning(f"钱包地址 {original_address} 没有活跃的WebSocket连接")
             
             # 存储待发送消息，以便稍后连接建立时发送
-            self._store_pending_message(wallet_address, message)
+            self._store_pending_message(original_address, message)
             return
         
-        logger.info(f"准备向用户 {wallet_address} 发送消息: 消息类型={message.get('type', 'unknown')}, 会话ID={message.get('conversation_id', 'unknown')}")
+        message_type = message.get('type', 'unknown')
+        conversation_id = message.get('conversation_id', 'unknown')
+        logger.info(f"准备向用户 {original_address} 发送消息: 类型={message_type}, 会话ID={conversation_id}")
         
         # 发送消息到所有连接，处理可能的断开连接
         disconnected = set()
@@ -104,23 +143,26 @@ class WebSocketManager:
                 await websocket.send_text(message_str)
                 success_count += 1
             except Exception as e:
-                logger.error(f"向用户 {wallet_address} 发送消息失败: {str(e)}")
+                logger.error(f"向用户 {original_address} 发送消息失败: {str(e)}")
                 disconnected.add(websocket)
         
-        logger.info(f"已向用户 {wallet_address} 的 {success_count}/{len(connections)} 个连接发送消息")
+        logger.info(f"已向用户 {original_address} 的 {success_count}/{len(connections)} 个连接发送消息")
         
         # 移除断开的连接
         if disconnected:
             async with self.lock:
-                if wallet_address in self.active_connections:
-                    self.active_connections[wallet_address] = connections.difference(disconnected)
-                    if not self.active_connections[wallet_address]:
-                        del self.active_connections[wallet_address]
-                        logger.info(f"用户 {wallet_address} 的所有WebSocket连接均已断开")
+                if original_address in self.active_connections:
+                    self.active_connections[original_address] = connections.difference(disconnected)
+                    if not self.active_connections[original_address]:
+                        del self.active_connections[original_address]
+                        # 如果小写映射存在，也删除它
+                        if lowercase_address in self.address_mapping and self.address_mapping[lowercase_address] == original_address:
+                            del self.address_mapping[lowercase_address]
+                        logger.info(f"用户 {original_address} 的所有WebSocket连接均已断开")
         
         # 如果部分发送失败，安排重试
-        if success_count == 0 and wallet_address not in self.pending_messages:
-            await self._retry_send_message(wallet_address, message)
+        if success_count == 0 and original_address not in self.pending_messages:
+            await self._retry_send_message(original_address, message)
     
     def _store_pending_message(self, wallet_address: str, message: dict):
         """存储待发送的消息，以便稍后连接建立时发送"""

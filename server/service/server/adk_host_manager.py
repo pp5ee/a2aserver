@@ -514,9 +514,20 @@ class ADKHostManager(ApplicationManager):
             wallet_address = message.metadata.get('wallet_address')
             break
       
-      # 如果找不到钱包地址，不执行推送
-      if not wallet_address:
+      # 额外日志记录
+      if wallet_address:
+        print(f"找到钱包地址 {wallet_address} 用于任务推送，任务ID: {task.id}")
+      else:
         print(f"无法推送任务更新：找不到钱包地址，任务ID: {task.id}")
+        
+        # 详细日志记录任务信息，帮助诊断
+        print(f"任务详情: ID={task.id}, 会话ID={task.sessionId if hasattr(task, 'sessionId') else 'unknown'}")
+        if task.status and task.status.message:
+          print(f"状态消息: {task.status.message}")
+        if hasattr(task, 'history') and task.history:
+          print(f"历史消息数量: {len(task.history)}")
+          for i, msg in enumerate(task.history[:2]):  # 只打印前两条消息
+            print(f"历史消息 {i}: 角色={msg.role}, 元数据={msg.metadata}")
         return
       
       # 获取会话ID
@@ -628,9 +639,11 @@ class ADKHostManager(ApplicationManager):
       async def send_task_update():
         try:
           await self.ws_manager.send_message(wallet_address, task_status)
-          print(f"已成功推送任务更新，任务ID: {task.id}, 状态: {task_status['task']['status']['state']}")
+          print(f"已成功推送任务更新，任务ID: {task.id}, 状态: {task_status['task']['status']['state']}, 地址: {wallet_address}")
         except Exception as e:
           print(f"发送任务更新时出错: {e}")
+          import traceback
+          print(traceback.format_exc())
       
       # 使用事件循环运行异步任务
       try:
