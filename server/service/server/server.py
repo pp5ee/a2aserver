@@ -728,6 +728,10 @@ class ConversationServer:
                 
                 task = Task(id=db_task['id'], sessionId=db_task['sessionId'], status=status)
                 
+                # 添加 message_id 字段
+                if 'message_id' in db_task:
+                    task.message_id = db_task['message_id']
+                
                 # 处理任务的历史消息
                 if 'data' in db_task and 'history' in db_task['data']:
                   try:
@@ -772,6 +776,12 @@ class ConversationServer:
         # 错误处理不应影响现有流程
         print(f"获取数据库任务时出错: {e}")
     
+    # 处理 message_id 字段
+    for task in memory_tasks:
+        # 如果任务对象中没有 message_id 属性，添加一个
+        if not hasattr(task, 'message_id'):
+            setattr(task, 'message_id', None)
+    
     # WebSocket推送任务更新
     try:
       # 只推送指定会话的任务状态
@@ -789,6 +799,7 @@ class ConversationServer:
             "task": {
               "id": task.id,
               "sessionId": task.sessionId,
+              "message_id": task.message_id if hasattr(task, 'message_id') else None,
               "status": {
                 "state": task.status.state.value if hasattr(task.status.state, 'value') else str(task.status.state),
                 "message": task.status.message.parts[0].text if task.status.message and hasattr(task.status.message, 'parts') and len(task.status.message.parts) > 0 else "",

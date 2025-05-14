@@ -1314,7 +1314,7 @@ class UserSessionManager:
             
             # 构建查询条件
             query = """
-            SELECT t.task_id, t.session_id, t.state, t.data, t.created_at, t.updated_at 
+            SELECT t.task_id, t.session_id, t.state, t.data, t.created_at, t.updated_at, t.status_message_id
             FROM tasks t
             """
             
@@ -1339,7 +1339,7 @@ class UserSessionManager:
             
             tasks = []
             for row in cursor.fetchall():
-                task_id, session_id, state, data, created_at, updated_at = row
+                task_id, session_id, state, data, created_at, updated_at, status_message_id = row
                 
                 # 反序列化任务数据
                 import json
@@ -1391,6 +1391,7 @@ class UserSessionManager:
                     'id': task_id,
                     'sessionId': session_id,
                     'state': state,
+                    'message_id': status_message_id,  # 添加 message_id 字段
                     'created_at': created_at.isoformat() if created_at else None,
                     'updated_at': updated_at.isoformat() if updated_at else None,
                     'data': task_data
