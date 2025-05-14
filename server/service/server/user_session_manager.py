@@ -1234,10 +1234,10 @@ class UserSessionManager:
             
             # 保存任务历史消息
             if task.history:
-                # 先删除旧的历史记录
-                cursor.execute("""
-                DELETE FROM task_history WHERE task_id = %s
-                """, (task_id,))
+                # # 先删除旧的历史记录
+                # cursor.execute("""
+                # DELETE FROM task_history WHERE task_id = %s
+                # """, (task_id,))
                 
                 # 使用集合去重，防止保存重复的历史消息
                 message_ids_seen = set()
@@ -1362,7 +1362,7 @@ class UserSessionManager:
                     
                     # 跳过已处理的message_id，防止重复
                     if message_id and message_id in processed_message_ids:
-                        logger.info(f"跳过重复的消息ID: {message_id}")
+                        #logger.info(f"跳过重复的消息ID: {message_id}")
                         continue
                     
                     try:

@@ -2,6 +2,7 @@
 run:
   uv main.py
   SSL_CERT_DIR=/etc/ssl/certs uv run main.py
+  SSL_CERT_FILE=$(python3 -m certifi) uv run main.py
 """
 import asyncio
 import os

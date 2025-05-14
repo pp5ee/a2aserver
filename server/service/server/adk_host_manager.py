@@ -247,6 +247,7 @@ class ADKHostManager(ApplicationManager):
                 content=self.adk_content_to_message(event.content, conversation_id),
                 timestamp=event.timestamp,
             ))
+            print(f"event: {event}")
             final_event = event
         
         # 执行带超时的处理，90秒超时
@@ -619,29 +620,79 @@ class ADKHostManager(ApplicationManager):
 
     return current_task
 
-  def process_artifact_event(self, current_task:Task, task_update_event: TaskArtifactUpdateEvent):
+  # def process_artifact_event(self, current_task:Task, task_update_event: TaskArtifactUpdateEvent):
+  #   artifact = task_update_event.artifact
+  #   print(f"Artifact in adk process_artifact_event function: {artifact}")
+  #   if not artifact.append:
+  #     #received the first chunk or entire payload for an artifact
+  #     if artifact.lastChunk is None or artifact.lastChunk:
+  #       #lastChunk bit is missing or is set to true, so this is the entire payload
+  #       #add this to artifacts
+  #       if not current_task.artifacts:
+  #         current_task.artifacts = []
+  #       current_task.artifacts.append(artifact)
+  #     else:
+  #       #this is a chunk of an artifact, stash it in temp store for assemling
+  #       if not task_update_event.id in self._artifact_chunks:
+  #             self._artifact_chunks[task_update_event.id] = {}
+  #       self._artifact_chunks[task_update_event.id][artifact.index] = artifact
+  #   else:
+  #       # we received an append chunk, add to the existing temp artifact
+  #       current_temp_artifact = self._artifact_chunks[task_update_event.id][artifact.index]
+  #       # TODO handle if current_temp_artifact is missing
+  #       current_temp_artifact.parts.extend(artifact.parts)
+  #       if artifact.lastChunk:
+  #         current_task.artifacts.append(current_temp_artifact)
+  #         del self._artifact_chunks[task_update_event.id][artifact.index]
+  def process_artifact_event(self, current_task,task_update_event):
     artifact = task_update_event.artifact
+    print(f"Artifact in adk process_artifact_event function: {artifact}")
+    
+    # 确保 artifacts 列表存在
+    if not current_task.artifacts:
+      current_task.artifacts = []
+      
     if not artifact.append:
-      #received the first chunk or entire payload for an artifact
+      # 收到首个块或完整制品
       if artifact.lastChunk is None or artifact.lastChunk:
-        #lastChunk bit is missing or is set to true, so this is the entire payload
-        #add this to artifacts
-        if not current_task.artifacts:
-          current_task.artifacts = []
+        # 这是完整的制品，直接添加
         current_task.artifacts.append(artifact)
+        
+        # 修改点：如果这是最后一个块（lastChunk=True），确保所有临时存储的制品也被添加
+        if artifact.lastChunk and task_update_event.id in self._artifact_chunks:
+          # 按照索引顺序整理和添加所有临时制品
+          chunks = self._artifact_chunks.get(task_update_event.id, {})
+          for index in sorted(chunks.keys()):
+            current_task.artifacts.append(chunks[index])
+          
+          # 清理临时存储
+          self._artifact_chunks.pop(task_update_event.id, None)
       else:
-        #this is a chunk of an artifact, stash it in temp store for assemling
-        if not task_update_event.id in self._artifact_chunks:
-              self._artifact_chunks[task_update_event.id] = {}
+        # 这是制品的一个块，存入临时存储
+        if task_update_event.id not in self._artifact_chunks:
+          self._artifact_chunks[task_update_event.id] = {}
         self._artifact_chunks[task_update_event.id][artifact.index] = artifact
     else:
-        # we received an append chunk, add to the existing temp artifact
-        current_temp_artifact = self._artifact_chunks[task_update_event.id][artifact.index]
-        # TODO handle if current_temp_artifact is missing
-        current_temp_artifact.parts.extend(artifact.parts)
-        if artifact.lastChunk:
-          current_task.artifacts.append(current_temp_artifact)
-          del self._artifact_chunks[task_update_event.id][artifact.index]
+      # 接收到追加块，添加到现有临时制品
+      current_temp_artifact = self._artifact_chunks[task_update_event.id][artifact.index]
+      current_temp_artifact.parts.extend(artifact.parts)
+      
+      if artifact.lastChunk:
+        # 这是最后一个块，添加完成的制品
+        current_task.artifacts.append(current_temp_artifact)
+        
+        # 删除此块的临时存储
+        del self._artifact_chunks[task_update_event.id][artifact.index]
+        
+        # 修改点：同样确保所有其他临时制品也被添加
+        chunks = self._artifact_chunks.get(task_update_event.id, {})
+        for index in sorted(chunks.keys()):
+          current_task.artifacts.append(chunks[index])
+        
+        # 清理整个任务的临时存储
+        self._artifact_chunks.pop(task_update_event.id, None)
+
+
 
   def add_event(self, event: Event):
     self._events[event.id] = event
@@ -732,6 +783,7 @@ class ADKHostManager(ApplicationManager):
     return sorted(self._events.values(), key=lambda x: x.timestamp)
 
   def adk_content_from_message(self, message: Message) -> types.Content:
+    print(f"adk_content_from_message: {message}")
     parts: list[types.Part] = []
     for part in message.parts:
       if part.type == "text":
@@ -755,6 +807,7 @@ class ADKHostManager(ApplicationManager):
     return types.Content(parts=parts, role=message.role)
 
   def adk_content_to_message(self, content: types.Content, conversation_id: str) -> Message:
+    print(f"adk_content_to_message CONTEXT: {content}")
     parts: list[Part] = []
     if not content.parts:
       return Message(

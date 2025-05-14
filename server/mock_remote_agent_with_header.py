@@ -216,7 +216,7 @@ def extract_query_from_request(request_data: Dict[str, Any]) -> str:
         query = request_data["task"]
     
     return query.strip()
-
+            
 # 处理任务请求（非流式）
 @app.post("/")
 async def handle_task(request: Request, auth_info: dict = Depends(verify_auth_headers)):
@@ -288,7 +288,7 @@ async def handle_task(request: Request, auth_info: dict = Depends(verify_auth_he
             id=task_id,
             taskId=task_id,
             status={"message": error_msg}
-        )
+    )
         return response.to_dict()
 
 # 处理流式任务请求
