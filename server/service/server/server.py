@@ -151,7 +151,7 @@ class ConversationServer:
         methods=["GET"])
         
     # 添加WebSocket路由
-    router.add_websocket_route("/ws", self._websocket_endpoint)
+    router.add_websocket_route("/api/ws", self._websocket_endpoint)
 
     # 启动定期清理任务
     if self.use_multi_user:
