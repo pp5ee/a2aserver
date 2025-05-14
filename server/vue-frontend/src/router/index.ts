@@ -4,6 +4,7 @@ import ConversationView from '@/views/ConversationView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 import AgentsView from '@/views/AgentsView.vue'
 import SolanaProgramView from '@/views/SolanaProgramView.vue'
+import WebSocketTestView from '@/views/WebSocketTestView.vue'
 
 const routes: Array<RouteRecordRaw> = [
   {
@@ -30,6 +31,11 @@ const routes: Array<RouteRecordRaw> = [
     path: '/solanaprogram',
     name: 'solanaprogram',
     component: SolanaProgramView
+  },
+  {
+    path: '/ws-test',
+    name: 'ws-test',
+    component: WebSocketTestView
   }
 ]
 

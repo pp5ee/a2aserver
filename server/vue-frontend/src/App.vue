@@ -12,6 +12,7 @@
         <router-link to="/conversation">会话</router-link>
         <router-link to="/agents">代理</router-link>
         <router-link to="/solanaprogram">Solana程序</router-link>
+        <router-link to="/ws-test">WebSocket测试</router-link>
         <router-link to="/settings">设置</router-link>
       </nav>
       

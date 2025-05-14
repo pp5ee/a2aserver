@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket Client Example</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            color: #333;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+        }
+        .connection-status {
+            margin-bottom: 20px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .connected {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .connecting {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+        pre {
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 5px;
+            overflow: auto;
+            max-height: 400px;
+        }
+        button {
+            padding: 8px 15px;
+            border: none;
+            border-radius: 5px;
+            background-color: #007bff;
+            color: white;
+            cursor: pointer;
+            margin-right: 5px;
+        }
+        button:hover {
+            background-color: #0069d9;
+        }
+        .input-group {
+            margin-bottom: 15px;
+        }
+        input {
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            width: 100%;
+            margin-bottom: 5px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>WebSocket Client Example</h1>
+        
+        <div id="connectionStatus" class="connection-status disconnected">
+            Disconnected
+        </div>
+        
+        <div class="input-group">
+            <label for="walletAddress">Wallet Address:</label>
+            <input type="text" id="walletAddress" placeholder="Enter your wallet address here" value="CdRe7WEGw2T1tuWCwq8zB6Q76XicMfDCN5SBL3BQgpp1">
+        </div>
+        
+        <div class="input-group">
+            <label for="serverUrl">WebSocket Server URL:</label>
+            <input type="text" id="serverUrl" placeholder="ws://localhost:8000/api/ws" value="ws://localhost:8000/api/ws">
+        </div>
+        
+        <div>
+            <button id="connectBtn">Connect</button>
+            <button id="disconnectBtn" disabled>Disconnect</button>
+            <button id="pingBtn" disabled>Send Ping</button>
+            <button id="clearBtn">Clear Log</button>
+        </div>
+        
+        <h2>WebSocket Messages:</h2>
+        <pre id="messagesLog">No messages yet...</pre>
+    </div>
+
+    <script>
+        // Get DOM elements
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const pingBtn = document.getElementById('pingBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const connectionStatus = document.getElementById('connectionStatus');
+        const messagesLog = document.getElementById('messagesLog');
+        const walletAddressInput = document.getElementById('walletAddress');
+        const serverUrlInput = document.getElementById('serverUrl');
+        
+        let socket = null;
+        let pingInterval = null;
+        
+        // Function to update connection status
+        function updateConnectionStatus(status, message) {
+            connectionStatus.className = 'connection-status ' + status;
+            connectionStatus.textContent = message;
+        }
+        
+        // Function to log messages
+        function logMessage(message, type = 'info') {
+            const now = new Date();
+            const timestamp = now.toISOString();
+            
+            // Format the message
+            let formattedMessage;
+            if (typeof message === 'object') {
+                formattedMessage = JSON.stringify(message, null, 2);
+            } else {
+                formattedMessage = message;
+            }
+            
+            // Add the message to the log
+            if (messagesLog.textContent === 'No messages yet...') {
+                messagesLog.textContent = `[${timestamp}] [${type}] ${formattedMessage}`;
+            } else {
+                messagesLog.textContent += `\n[${timestamp}] [${type}] ${formattedMessage}`;
+            }
+            
+            // Auto-scroll to the bottom
+            messagesLog.scrollTop = messagesLog.scrollHeight;
+        }
+        
+        // Function to connect to WebSocket server
+        function connectToServer() {
+            const walletAddress = walletAddressInput.value.trim();
+            const serverUrl = serverUrlInput.value.trim();
+            
+            if (!walletAddress) {
+                alert('Please enter a wallet address');
+                return;
+            }
+            
+            if (!serverUrl) {
+                alert('Please enter a server URL');
+                return;
+            }
+            
+            // Disconnect if already connected
+            if (socket) {
+                socket.close();
+            }
+            
+            // Update UI status
+            updateConnectionStatus('connecting', 'Connecting...');
+            
+            try {
+                // Create a new WebSocket connection
+                socket = new WebSocket(serverUrl);
+                
+                // Set up event handlers
+                socket.onopen = function(event) {
+                    // Add wallet address header (server will parse these from the first message)
+                    socket.send(JSON.stringify({
+                        type: 'auth',
+                        'X-Solana-PublicKey': walletAddress
+                    }));
+                    
+                    updateConnectionStatus('connected', 'Connected');
+                    logMessage('WebSocket connection established');
+                    
+                    // Enable/disable buttons
+                    connectBtn.disabled = true;
+                    disconnectBtn.disabled = false;
+                    pingBtn.disabled = false;
+                    
+                    // Start ping interval
+                    pingInterval = setInterval(() => {
+                        sendPing();
+                    }, 30000); // Send ping every 30 seconds
+                };
+                
+                socket.onmessage = function(event) {
+                    // Parse and log the message
+                    try {
+                        const message = JSON.parse(event.data);
+                        logMessage(message, 'received');
+                    } catch (error) {
+                        logMessage(event.data, 'received');
+                    }
+                };
+                
+                socket.onclose = function(event) {
+                    updateConnectionStatus('disconnected', 'Disconnected');
+                    logMessage('WebSocket connection closed', 'error');
+                    
+                    // Clean up
+                    if (pingInterval) {
+                        clearInterval(pingInterval);
+                        pingInterval = null;
+                    }
+                    
+                    // Reset UI
+                    connectBtn.disabled = false;
+                    disconnectBtn.disabled = true;
+                    pingBtn.disabled = true;
+                    
+                    socket = null;
+                };
+                
+                socket.onerror = function(error) {
+                    updateConnectionStatus('disconnected', 'Error');
+                    logMessage('WebSocket error: ' + error.message, 'error');
+                };
+            } catch (error) {
+                updateConnectionStatus('disconnected', 'Connection Failed');
+                logMessage('Connection error: ' + error.message, 'error');
+            }
+        }
+        
+        // Function to disconnect from WebSocket server
+        function disconnectFromServer() {
+            if (socket) {
+                socket.close();
+            }
+        }
+        
+        // Function to send a ping message
+        function sendPing() {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                const pingMessage = {
+                    type: 'ping',
+                    timestamp: new Date().toISOString()
+                };
+                
+                socket.send(JSON.stringify(pingMessage));
+                logMessage(pingMessage, 'sent');
+            }
+        }
+        
+        // Button event listeners
+        connectBtn.addEventListener('click', connectToServer);
+        disconnectBtn.addEventListener('click', disconnectFromServer);
+        pingBtn.addEventListener('click', sendPing);
+        clearBtn.addEventListener('click', () => {
+            messagesLog.textContent = 'No messages yet...';
+        });
+    </script>
+</body>
+</html> 

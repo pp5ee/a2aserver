@@ -78,6 +78,34 @@ server {
         return 404;
     }
     
+    # WebSocket路径配置 - 直接代理到后端WebSocket服务
+    location /api/ws {
+        proxy_pass http://localhost:12000/api/ws;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # 传递认证相关头
+        proxy_set_header X-Solana-PublicKey $http_x_solana_publickey;
+        proxy_set_header X-Solana-Signature $http_x_solana_signature;
+        proxy_set_header X-Solana-Nonce $http_x_solana_nonce;
+        proxy_cache_bypass $http_upgrade;
+        
+        # WebSocket特有配置
+        proxy_read_timeout 300s;        # 增加读取超时，适用于长连接
+        proxy_connect_timeout 75s;      # 连接超时
+        proxy_send_timeout 300s;        # 发送超时
+        
+        # 允许WebSocket跨域
+        add_header 'Access-Control-Allow-Origin' '*' always;
+        add_header 'Access-Control-Allow-Methods' 'GET, POST, OPTIONS' always;
+        add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,X-Solana-PublicKey,X-Solana-Signature,X-Solana-Nonce,Authorization' always;
+        add_header 'Access-Control-Allow-Credentials' 'true' always;
+    }
+    
     # API反向代理配置 - 通过/beapi路径
     location /beapi/ {
         # 移除/beapi前缀，将请求转发到后端API
@@ -188,6 +216,7 @@ sudo systemctl restart nginx
 
 echo -e "${GREEN}Nginx配置完成!${NC}"
 echo -e "${GREEN}后端API服务应运行在: http://localhost:12000 (通过 https://agenticdao.net/beapi/ 访问)${NC}"
+echo -e "${GREEN}WebSocket服务应运行在: http://localhost:12000/api/ws (通过 https://agenticdao.net/api/ws 访问)${NC}"
 echo -e "${GREEN}前端服务应运行在: http://localhost:3001 (通过 https://agenticdao.net 访问)${NC}"
 echo -e "${YELLOW}请确保手动启动前端和后端服务，并正确设置它们的端口。${NC}"
 echo -e "${YELLOW}对于前端服务，请使用以下命令以开发模式启动:${NC}"

@@ -7,12 +7,13 @@ import logging
 import json
 from typing import Any, Optional
 from fastapi import APIRouter
-from fastapi import Request, Response
+from fastapi import Request, Response, WebSocket, WebSocketDisconnect
 from common.types import Message, Task, TextPart, DataPart, FilePart, FileContent, TaskStatus, TaskState, Artifact
 from .in_memory_manager import InMemoryFakeAgentManager
 from .application_manager import ApplicationManager
 from .adk_host_manager import ADKHostManager, get_message_id
 from .user_session_manager import UserSessionManager
+from .websocket_manager import WebSocketManager
 from service.types import (
     Conversation,
     Event,
@@ -38,6 +39,8 @@ from typing import Awaitable, Callable, List, Optional, Tuple, Union, Dict
 import datetime
 from concurrent.futures import ThreadPoolExecutor
 import sys
+import time
+from utils.solana_verifier import solana_verifier, sdk_available
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -53,6 +56,9 @@ class ConversationServer:
     agent_manager = os.environ.get("A2A_HOST", "ADK")
     self.default_manager: ApplicationManager
     self.use_multi_user = True  # 启用多用户模式
+    
+    # 获取WebSocket管理器实例
+    self.ws_manager = WebSocketManager.get_instance()
     
     # 获取API密钥环境变量
     api_key = os.environ.get("GOOGLE_API_KEY", "")
@@ -144,6 +150,9 @@ class ConversationServer:
         self._get_history_messages,
         methods=["GET"])
         
+    # 添加WebSocket路由
+    router.add_websocket_route("/ws", self._websocket_endpoint)
+
     # 启动定期清理任务
     if self.use_multi_user:
       threading.Thread(target=self._run_cleanup_task, daemon=True).start()
@@ -285,6 +294,29 @@ class ConversationServer:
         max_messages=10  # 保留最新的10条消息
       )
       
+      # WebSocket推送消息通知
+      try:
+        # 发送消息创建通知
+        ws_message = {
+          "type": "new_message",
+          "conversation_id": conversation_id,
+          "message": {
+            "id": message.metadata.get('message_id', ''),
+            "role": message.role,
+            "content": [
+              {
+                "type": part.type,
+                "text": part.text if hasattr(part, 'text') else None
+              }
+              for part in message.parts
+              if part.type == 'text'
+            ]
+          }
+        }
+        asyncio.create_task(self.ws_manager.send_message(wallet_address, ws_message))
+      except Exception as e:
+        logger.error(f"通过WebSocket发送消息通知时出错: {e}")
+      
       # 如果当前存在任务，将消息添加到任务历史记录
       for task in manager.tasks:
         if task.sessionId == conversation_id:
@@ -318,10 +350,42 @@ class ConversationServer:
         """使用超时机制处理消息"""
         try:
             # 增加超时时间到60秒，确保有足够的处理时间
-            await asyncio.wait_for(
+            response = await asyncio.wait_for(
                 manager.process_message(message),
                 timeout=60.0
             )
+            
+            # 如果有响应且是多用户模式，通过WebSocket推送代理响应
+            if response and self.use_multi_user and wallet_address and conversation_id:
+                try:
+                    # 检查响应消息ID是否存在于日志中
+                    response_id = ""
+                    if hasattr(response, 'metadata') and response.metadata and 'message_id' in response.metadata:
+                        response_id = response.metadata['message_id']
+                    
+                    # 构建代理响应WebSocket消息
+                    agent_message = {
+                        "type": "new_message",
+                        "conversation_id": conversation_id,
+                        "message": {
+                            "id": response_id,
+                            "role": "agent",  # 使用agent角色标识
+                            "content": [
+                                {
+                                    "type": part.type,
+                                    "text": part.text if hasattr(part, 'text') else None
+                                }
+                                for part in response.parts
+                                if part.type == 'text'
+                            ]
+                        }
+                    }
+                    
+                    # 发送代理响应通知
+                    logger.info(f"通过WebSocket推送代理响应: ID={response_id}")
+                    asyncio.create_task(self.ws_manager.send_message(wallet_address, agent_message))
+                except Exception as e:
+                    logger.error(f"通过WebSocket发送代理响应通知时出错: {e}")
         except asyncio.TimeoutError:
             logger.error(f"处理消息超时: {message.metadata.get('message_id', 'unknown')}")
             # 在超时情况下尝试取消任务并清理资源
@@ -337,7 +401,7 @@ class ConversationServer:
             logger.error(f"处理消息时出错: {e}")
             import traceback
             logger.error(f"错误详情: {traceback.format_exc()}")
-    
+
     # 使用线程池执行异步任务，而不是为每个请求创建新线程
     def run_async_task():
         """在线程池中运行异步任务"""
@@ -368,9 +432,59 @@ class ConversationServer:
                 loop.close()
         except Exception as e:
             logger.error(f"消息处理线程出错: {e}")
+            
+    # 监听数据库消息变化的函数
+    def monitor_agent_messages():
+        """监听代理消息，并通过WebSocket推送"""
+        try:
+            # 等待处理完成后，查询数据库中最新的代理消息
+            if self.use_multi_user and wallet_address and conversation_id:
+                # 获取最新的代理消息（暂停500ms等待处理完成）
+                import time
+                time.sleep(0.5)
+                
+                # 查询最新的代理消息
+                messages = self.user_session_manager.get_conversation_messages(
+                    conversation_id=conversation_id,
+                    wallet_address=wallet_address,
+                    limit=1,
+                    role="agent"
+                )
+                
+                # 发送最新的代理消息
+                if messages and len(messages) > 0:
+                    agent_message = messages[0]
+                    response_id = agent_message.get('message_id', '')
+                    
+                    # 构建WebSocket消息
+                    ws_message = {
+                        "type": "new_message",
+                        "conversation_id": conversation_id,
+                        "message": {
+                            "id": response_id,
+                            "role": "agent",
+                            "content": []
+                        }
+                    }
+                    
+                    # 添加内容
+                    if 'content' in agent_message and 'parts' in agent_message['content']:
+                        ws_message["message"]["content"] = [
+                            {
+                                "type": part.get('type', 'text'),
+                                "text": part.get('text', '')
+                            }
+                            for part in agent_message['content']['parts']
+                            if 'type' in part and part.get('type') == 'text'
+                        ]
+                    
+                    # 发送WebSocket消息
+                    logger.info(f"从数据库推送代理消息: ID={response_id}")
+                    asyncio.run(self.ws_manager.send_message(wallet_address, ws_message))
+        except Exception as e:
+            logger.error(f"监控代理消息时出错: {e}")
     
-    # 使用全局线程池运行异步任务，避免创建过多线程
-    # 从全局变量获取线程池
+    # 提交任务到线程池
     thread_pool = None
     
     # 尝试从主模块获取线程池
@@ -386,8 +500,11 @@ class ConversationServer:
     if thread_pool is None:
         thread_pool = ThreadPoolExecutor(max_workers=20, thread_name_prefix="message_worker")
     
-    # 提交任务到线程池
+    # 提交消息处理任务到线程池
     thread_pool.submit(run_async_task)
+    
+    # 提交监控代理消息的任务到线程池
+    thread_pool.submit(monitor_agent_messages)
     
     return SendMessageResponse(result=MessageInfo(
         message_id=message.metadata['message_id'],
@@ -655,6 +772,70 @@ class ConversationServer:
         # 错误处理不应影响现有流程
         print(f"获取数据库任务时出错: {e}")
     
+    # WebSocket推送任务更新
+    try:
+      # 只推送指定会话的任务状态
+      if conversation_id:
+        # 获取该会话的任务
+        session_tasks = [task for task in memory_tasks if 
+                      hasattr(task, 'sessionId') and task.sessionId == conversation_id]
+        
+        # 为每个任务创建推送消息
+        for task in session_tasks:
+          # 创建任务状态消息
+          task_status = {
+            "type": "task_update",
+            "conversation_id": conversation_id,
+            "task": {
+              "id": task.id,
+              "sessionId": task.sessionId,
+              "status": {
+                "state": task.status.state.value if hasattr(task.status.state, 'value') else str(task.status.state),
+                "message": task.status.message.parts[0].text if task.status.message and hasattr(task.status.message, 'parts') and len(task.status.message.parts) > 0 else "",
+                "timestamp": task.status.timestamp.isoformat() if hasattr(task.status, 'timestamp') else ""
+              }
+            }
+          }
+          
+          # 添加历史记录
+          if hasattr(task, 'history') and task.history:
+            task_status["task"]["history"] = [
+              {
+                "role": msg.role,
+                "parts": [
+                  {
+                    "type": part.type,
+                    "text": part.text if hasattr(part, 'text') else None
+                  }
+                  for part in msg.parts
+                  if part.type == 'text'
+                ]
+              }
+              for msg in task.history
+            ]
+          
+          # 添加artifacts
+          if hasattr(task, 'artifacts') and task.artifacts:
+            task_status["task"]["artifacts"] = [
+              {
+                "name": artifact.name,
+                "parts": [
+                  {
+                    "type": part.type,
+                    "text": part.text if hasattr(part, 'text') else None
+                  }
+                  for part in artifact.parts
+                  if part.type == 'text'
+                ]
+              }
+              for artifact in task.artifacts
+            ]
+          
+          # 发送WebSocket消息
+          asyncio.create_task(self.ws_manager.send_message(wallet_address, task_status))
+    except Exception as e:
+      logger.error(f"通过WebSocket推送任务更新时出错: {e}")
+    
     # 返回合并后的任务列表
     return ListTaskResponse(result=memory_tasks)
 
@@ -898,3 +1079,105 @@ class ConversationServer:
     except Exception as e:
       logger.error(f"删除会话时出错: {str(e)}")
       return {"error": f"Error deleting conversation: {str(e)}", "status": "error", "code": 500}
+
+  async def _websocket_endpoint(self, websocket: WebSocket):
+    """WebSocket连接处理"""
+    # 从HTTP头和URL参数中获取鉴权信息
+    # 1. 首先尝试从HTTP头获取
+    wallet_address = websocket.headers.get('X-Solana-PublicKey')
+    nonce = websocket.headers.get('X-Solana-Nonce')
+    signature = websocket.headers.get('X-Solana-Signature')
+    
+    # 2. 如果没有从HTTP头获取到，尝试从URL参数获取
+    if not wallet_address or not nonce or not signature:
+      # 获取URL查询参数
+      query_params = websocket.query_params
+      if not wallet_address:
+        wallet_address = query_params.get('publicKey')
+      if not nonce:
+        nonce = query_params.get('nonce')
+      if not signature:
+        signature = query_params.get('signature')
+      
+      logger.info(f"从URL参数获取鉴权信息: wallet={wallet_address[:10] if wallet_address else 'None'}")
+    
+    # 检查必要的鉴权头
+    if not wallet_address:
+      # 如果没有钱包地址，拒绝连接
+      await websocket.close(code=1008, reason="Missing wallet address (X-Solana-PublicKey or publicKey)")
+      logger.warning("WebSocket连接被拒绝: 缺少钱包地址")
+      return
+      
+    # 验证签名 - 如果需要签名
+    if not nonce or not signature:
+      await websocket.close(code=1008, reason="Missing authentication data (nonce or signature)")
+      logger.warning(f"WebSocket连接被拒绝: 缺少签名信息, wallet={wallet_address[:10]}...")
+      return
+    
+    # 验证签名 - 与HTTP接口使用相同的验证逻辑
+    try:
+      if not sdk_available:
+        await websocket.close(code=1008, reason="Solana SDK verification not available")
+        logger.error("WebSocket连接被拒绝: Solana SDK不可用")
+        return
+        
+      # 使用相同的验证器验证签名
+      if not solana_verifier.verify_signature(wallet_address, nonce, signature):
+        # 检查是否签名过期
+        try:
+          nonce_timestamp = int(nonce)
+          current_time = int(time.time() * 1000)
+          
+          if current_time > nonce_timestamp:
+            await websocket.close(code=1008, reason="Signature expired, please sign again")
+            logger.warning(f"WebSocket连接被拒绝: 签名已过期, wallet={wallet_address[:10]}...")
+          else:
+            await websocket.close(code=1008, reason="Invalid signature")
+            logger.warning(f"WebSocket连接被拒绝: 签名无效, wallet={wallet_address[:10]}...")
+        except:
+          await websocket.close(code=1008, reason="Invalid nonce format")
+          logger.warning(f"WebSocket连接被拒绝: nonce格式无效, wallet={wallet_address[:10]}...")
+        return
+      
+      logger.info(f"WebSocket连接签名验证成功: wallet={wallet_address[:10]}...")
+    except Exception as e:
+      # 验证过程发生异常
+      await websocket.close(code=1008, reason="Authentication error")
+      logger.error(f"WebSocket连接鉴权异常: {str(e)}")
+      return
+    
+    # 建立连接
+    await self.ws_manager.connect(websocket, wallet_address)
+    
+    try:
+      # 发送连接成功消息
+      await websocket.send_text(json.dumps({
+        "type": "connection_established",
+        "message": "WebSocket连接已成功建立",
+        "wallet_address": wallet_address
+      }))
+      
+      # 监听客户端消息
+      while True:
+        # 接收客户端消息
+        data = await websocket.receive_text()
+        
+        # 处理心跳消息
+        try:
+          message = json.loads(data)
+          if message.get("type") == "ping":
+            await websocket.send_text(json.dumps({
+              "type": "pong",
+              "timestamp": message.get("timestamp")
+            }))
+        except Exception as e:
+          logger.error(f"处理WebSocket消息时出错: {e}")
+    
+    except WebSocketDisconnect:
+      # 客户端断开连接
+      logger.info(f"客户端断开WebSocket连接: {wallet_address}")
+    except Exception as e:
+      logger.error(f"WebSocket连接出错: {e}")
+    finally:
+      # 断开连接
+      await self.ws_manager.disconnect(websocket, wallet_address)

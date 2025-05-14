@@ -31,6 +31,8 @@ from pages.settings import settings_page_content
 from pages.task_list import task_list_page
 from state import host_agent_service
 from service.server.server import ConversationServer
+# 导入WebSocket管理器
+from service.server.websocket_manager import WebSocketManager
 # 导入API文档设置
 from api_docs import setup_swagger_docs
 
@@ -48,7 +50,7 @@ except ImportError as e:
     
     # 不再创建模拟验证器，确保当SDK不可用时签名验证必须失败
 
-from fastapi import FastAPI, APIRouter, Request, Response, HTTPException
+from fastapi import FastAPI, APIRouter, Request, Response, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.wsgi import WSGIMiddleware
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -661,6 +663,75 @@ app.add_middleware(
     allow_headers=["*"],  # 允许所有请求头
     expose_headers=["*"]  # 允许暴露所有响应头
 )
+
+# 设置API路由
+api_router = APIRouter(prefix="/api")
+conversation_server = ConversationServer(api_router)
+
+# 添加WebSocket API路由
+ws_router = APIRouter(prefix="/api")
+
+# 将API路由注册到应用
+app.include_router(api_router)
+# 将WebSocket路由注册到应用（不包含WebSocket处理器，因为已直接在应用上添加）
+app.include_router(ws_router)
+
+# 添加WebSocket服务说明
+@app.get("/api/websocket-info")
+async def get_websocket_info():
+    """
+    获取WebSocket服务的相关信息，包括支持的功能和使用方法
+    """
+    return {
+        "websocket_endpoint": "/api/ws",
+        "authentication": "通过请求头'X-Solana-PublicKey'传递钱包地址",
+        "supported_features": [
+            "新的会话消息推送",
+            "任务状态更新推送",
+            "任务历史记录推送",
+            "任务产出物(artifacts)推送"
+        ],
+        "message_formats": {
+            "new_message": {
+                "type": "new_message",
+                "conversation_id": "会话ID",
+                "message": {
+                    "id": "消息ID",
+                    "role": "发送者角色",
+                    "content": [{"type": "内容类型", "text": "文本内容"}]
+                }
+            },
+            "task_update": {
+                "type": "task_update",
+                "conversation_id": "会话ID",
+                "task": {
+                    "id": "任务ID",
+                    "sessionId": "会话ID",
+                    "status": {
+                        "state": "任务状态",
+                        "message": "状态消息",
+                        "timestamp": "时间戳"
+                    },
+                    "history": "任务历史记录(可选)",
+                    "artifacts": "任务产出物(可选)"
+                }
+            },
+            "heartbeat": {
+                "ping": {"type": "ping", "timestamp": "时间戳"},
+                "pong": {"type": "pong", "timestamp": "时间戳"}
+            }
+        },
+        "connection_status": {
+            "active_connections": WebSocketManager.get_instance().get_active_connections_count()
+        }
+    }
+
+# 直接注册WebSocket路由到应用
+@app.websocket("/api/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await conversation_server._websocket_endpoint(websocket)
+
+# 这一行必须放在所有API和WebSocket路由之后，以确保它们能够正常工作
 app.mount(
     "/",
     WSGIMiddleware(

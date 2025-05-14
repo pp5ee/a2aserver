@@ -26,6 +26,7 @@ from hosts.multiagent.remote_agent_connection import (
 )
 from utils.agent_card import get_agent_card
 from service.server.application_manager import ApplicationManager
+from service.server.websocket_manager import WebSocketManager
 from google.adk import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
@@ -69,6 +70,9 @@ class ADKHostManager(ApplicationManager):
     self.app_name = "A2A"
     self.api_key = api_key or os.environ.get("GOOGLE_API_KEY", "")
     self.uses_vertex_ai = uses_vertex_ai or os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").upper() == "TRUE"
+    
+    # 获取WebSocket管理器实例
+    self.ws_manager = WebSocketManager.get_instance()
     
     # Set environment variables based on auth method
     if self.uses_vertex_ai:
@@ -283,6 +287,65 @@ class ADKHostManager(ApplicationManager):
               )
               print(f"已保存代理响应到数据库，消息ID: {new_message_id}")
               
+              # 通过WebSocket推送消息通知
+              try:
+                # 构建WebSocket消息
+                ws_message = {
+                  "type": "new_message",
+                  "conversation_id": conversation_id,
+                  "message": {
+                    "id": new_message_id,
+                    "role": "agent",
+                    "content": [
+                      {
+                        "type": part.type,
+                        "text": part.text if hasattr(part, 'text') else None
+                      }
+                      for part in response.parts
+                      if part.type == 'text'
+                    ]
+                  }
+                }
+                
+                # 确保消息内容不为空 
+                if not ws_message["message"]["content"]:
+                  print(f"警告: WebSocket消息内容为空，部分内容可能无法正常显示")
+                
+                # 异步发送WebSocket消息，确保执行
+                send_task = asyncio.create_task(self.ws_manager.send_message(wallet_address, ws_message))
+                
+                # 尝试等待任务完成，最多等待5秒
+                try:
+                  await asyncio.wait_for(send_task, timeout=5.0)
+                  print(f"已成功通过WebSocket推送代理响应，消息ID: {new_message_id}")
+                except asyncio.TimeoutError:
+                  print(f"WebSocket消息发送超时，但任务仍在后台执行")
+                
+                # 如果是重要消息，尝试多次发送以增加可靠性（最多重试3次）
+                max_retries = 3
+                retry_count = 0
+                retry_delay = 1.0  # 秒
+                
+                # 在消息发送失败时，安排定时重发（仅对agent消息执行）
+                async def retry_send():
+                  nonlocal retry_count
+                  while retry_count < max_retries:
+                    await asyncio.sleep(retry_delay * (retry_count + 1))  # 递增延迟
+                    try:
+                      print(f"正在重试发送WebSocket消息，尝试 #{retry_count+1}，消息ID: {new_message_id}")
+                      await self.ws_manager.send_message(wallet_address, ws_message)
+                      print(f"WebSocket消息重发成功，尝试 #{retry_count+1}，消息ID: {new_message_id}")
+                      break  # 发送成功则退出循环
+                    except Exception as e:
+                      print(f"WebSocket消息重发失败，尝试 #{retry_count+1}，错误: {e}")
+                      retry_count += 1
+                
+                # 创建重试任务（不等待完成，让它在后台运行）
+                asyncio.create_task(retry_send())
+                
+              except Exception as e:
+                print(f"通过WebSocket发送消息通知时出错: {e}")
+              
               # 如果有相关任务，将响应添加到任务历史记录
               for task in self._tasks:
                 if task.sessionId == conversation_id:
@@ -374,6 +437,9 @@ class ADKHostManager(ApplicationManager):
     self.emit_event(task, agent_card)
     current_task = None
     
+    # 获取会话ID
+    conversation_id = get_conversation_id(task)
+    
     if isinstance(task, TaskStatusUpdateEvent):
       current_task = self.add_or_get_task(task)
       current_task.status = task.status
@@ -386,6 +452,9 @@ class ADKHostManager(ApplicationManager):
       self.update_task(current_task)
       self.insert_id_trace(task.status.message)
       
+      # 推送任务状态更新
+      self._push_task_update_to_websocket(current_task)
+      
       # 尝试保存任务到数据库
       self._save_task_to_db(current_task)
       
@@ -395,7 +464,10 @@ class ADKHostManager(ApplicationManager):
       self.process_artifact_event(current_task, task)
       self.update_task(current_task)
       
-      # 尝试保存任务到数据库 - 新增代码
+      # 推送任务产出物更新
+      self._push_task_update_to_websocket(current_task)
+      
+      # 尝试保存任务到数据库
       self._save_task_to_db(current_task)
       
       return current_task
@@ -405,7 +477,10 @@ class ADKHostManager(ApplicationManager):
       self.insert_id_trace(task.status.message)
       self.add_task(task)
       
-      # 尝试保存任务到数据库 - 新增代码
+      # 推送新任务
+      self._push_task_update_to_websocket(task)
+      
+      # 尝试保存任务到数据库
       self._save_task_to_db(task)
       
       return task
@@ -414,11 +489,171 @@ class ADKHostManager(ApplicationManager):
       self.insert_id_trace(task.status.message)
       self.update_task(task)
       
-      # 尝试保存任务到数据库 - 新增代码
+      # 推送任务更新
+      self._push_task_update_to_websocket(task)
+      
+      # 尝试保存任务到数据库
       self._save_task_to_db(task)
       
       return task
       
+  def _push_task_update_to_websocket(self, task: Task):
+    """将任务更新推送到WebSocket"""
+    try:
+      # 获取钱包地址
+      wallet_address = None
+      
+      # 从任务状态消息中获取钱包地址
+      if task.status and task.status.message and task.status.message.metadata:
+        wallet_address = task.status.message.metadata.get('wallet_address')
+      
+      # 如果没有在状态消息中找到，尝试在任务历史中查找
+      if not wallet_address and hasattr(task, 'history') and task.history:
+        for message in task.history:
+          if message.metadata and 'wallet_address' in message.metadata:
+            wallet_address = message.metadata.get('wallet_address')
+            break
+      
+      # 如果找不到钱包地址，不执行推送
+      if not wallet_address:
+        print(f"无法推送任务更新：找不到钱包地址，任务ID: {task.id}")
+        return
+      
+      # 获取会话ID
+      conversation_id = task.sessionId if hasattr(task, 'sessionId') else None
+      if not conversation_id:
+        print(f"无法推送任务更新：找不到会话ID，任务ID: {task.id}")
+        return
+      
+      # 创建任务状态消息
+      task_status = {
+        "type": "task_update",
+        "conversation_id": conversation_id,
+        "task": {
+          "id": task.id,
+          "sessionId": task.sessionId,
+          "status": {
+            "state": task.status.state.value if hasattr(task.status.state, 'value') else str(task.status.state),
+            "message": ""
+          }
+        }
+      }
+      
+      # 获取与任务关联的消息ID
+      message_id = None
+      
+      # 首先从任务状态消息的元数据中查找
+      if task.status and task.status.message and task.status.message.metadata:
+        message_id = task.status.message.metadata.get('message_id')
+      
+      # 如果没找到，尝试从任务历史中查找最早的用户消息ID
+      if not message_id and hasattr(task, 'history') and task.history:
+        # 首先查找最早的用户消息
+        for msg in task.history:
+          if msg.role == 'user' and msg.metadata and 'message_id' in msg.metadata:
+            message_id = msg.metadata.get('message_id')
+            break
+        
+        # 如果还没找到，尝试找任何含有message_id的消息
+        if not message_id:
+          for msg in task.history:
+            if msg.metadata and 'message_id' in msg.metadata:
+              message_id = msg.metadata.get('message_id')
+              break
+      
+      # 将消息ID添加到任务状态消息中
+      if message_id:
+        task_status["message_id"] = message_id
+        print(f"任务更新消息关联到消息ID: {message_id}, 任务ID: {task.id}")
+      else:
+        print(f"警告: 无法找到与任务关联的消息ID, 任务ID: {task.id}")
+      
+      # 添加状态消息文本
+      if task.status.message:
+        if hasattr(task.status.message, 'parts') and task.status.message.parts:
+          for part in task.status.message.parts:
+            if part.type == 'text' and hasattr(part, 'text'):
+              task_status["task"]["status"]["message"] = part.text
+              break
+        elif hasattr(task.status.message, 'text'):
+          # 直接使用text属性
+          task_status["task"]["status"]["message"] = task.status.message.text
+        elif isinstance(task.status.message, str):
+          # 如果是字符串类型
+          task_status["task"]["status"]["message"] = task.status.message
+        elif isinstance(task.status.message, dict) and 'text' in task.status.message:
+          # 如果是字典类型且包含text字段
+          task_status["task"]["status"]["message"] = task.status.message['text']
+      
+      # 添加时间戳
+      if hasattr(task.status, 'timestamp'):
+        task_status["task"]["status"]["timestamp"] = task.status.timestamp.isoformat() if hasattr(task.status.timestamp, 'isoformat') else str(task.status.timestamp)
+      
+      # 添加历史记录
+      if hasattr(task, 'history') and task.history:
+        task_status["task"]["history"] = [
+          {
+            "role": msg.role,
+            "parts": [
+              {
+                "type": part.type,
+                "text": part.text if hasattr(part, 'text') else None
+              }
+              for part in msg.parts
+              if part.type == 'text'
+            ]
+          }
+          for msg in task.history
+        ]
+      
+      # 添加artifacts
+      if hasattr(task, 'artifacts') and task.artifacts:
+        task_status["task"]["artifacts"] = [
+          {
+            "name": artifact.name,
+            "parts": [
+              {
+                "type": part.type,
+                "text": part.text if hasattr(part, 'text') else None
+              }
+              for part in artifact.parts
+              if part.type == 'text'
+            ]
+          }
+          for artifact in task.artifacts
+        ]
+      
+      # 异步发送WebSocket消息
+      # 创建异步任务发送消息，但不等待
+      async def send_task_update():
+        try:
+          await self.ws_manager.send_message(wallet_address, task_status)
+          print(f"已成功推送任务更新，任务ID: {task.id}, 状态: {task_status['task']['status']['state']}")
+        except Exception as e:
+          print(f"发送任务更新时出错: {e}")
+      
+      # 使用事件循环运行异步任务
+      try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+          # 如果事件循环已经在运行，创建任务但不等待结果
+          asyncio.create_task(send_task_update())
+        else:
+          # 如果事件循环未运行，则运行直到完成
+          loop.run_until_complete(send_task_update())
+      except RuntimeError:
+        # 如果获取事件循环失败，创建新的事件循环
+        print("获取事件循环失败，创建新的事件循环以发送任务更新")
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        new_loop.run_until_complete(send_task_update())
+        new_loop.close()
+      
+    except Exception as e:
+      print(f"推送任务更新到WebSocket时出错: {e}")
+      import traceback
+      print(traceback.format_exc())
+
   def _save_task_to_db(self, task: Task):
     """尝试将任务保存到数据库"""
     try:
@@ -620,30 +855,6 @@ class ADKHostManager(ApplicationManager):
 
     return current_task
 
-  # def process_artifact_event(self, current_task:Task, task_update_event: TaskArtifactUpdateEvent):
-  #   artifact = task_update_event.artifact
-  #   print(f"Artifact in adk process_artifact_event function: {artifact}")
-  #   if not artifact.append:
-  #     #received the first chunk or entire payload for an artifact
-  #     if artifact.lastChunk is None or artifact.lastChunk:
-  #       #lastChunk bit is missing or is set to true, so this is the entire payload
-  #       #add this to artifacts
-  #       if not current_task.artifacts:
-  #         current_task.artifacts = []
-  #       current_task.artifacts.append(artifact)
-  #     else:
-  #       #this is a chunk of an artifact, stash it in temp store for assemling
-  #       if not task_update_event.id in self._artifact_chunks:
-  #             self._artifact_chunks[task_update_event.id] = {}
-  #       self._artifact_chunks[task_update_event.id][artifact.index] = artifact
-  #   else:
-  #       # we received an append chunk, add to the existing temp artifact
-  #       current_temp_artifact = self._artifact_chunks[task_update_event.id][artifact.index]
-  #       # TODO handle if current_temp_artifact is missing
-  #       current_temp_artifact.parts.extend(artifact.parts)
-  #       if artifact.lastChunk:
-  #         current_task.artifacts.append(current_temp_artifact)
-  #         del self._artifact_chunks[task_update_event.id][artifact.index]
   def process_artifact_event(self, current_task,task_update_event):
     artifact = task_update_event.artifact
     print(f"Artifact in adk process_artifact_event function: {artifact}")
@@ -691,8 +902,6 @@ class ADKHostManager(ApplicationManager):
         
         # 清理整个任务的临时存储
         self._artifact_chunks.pop(task_update_event.id, None)
-
-
 
   def add_event(self, event: Event):
     self._events[event.id] = event
