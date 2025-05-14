@@ -164,7 +164,7 @@ server {
         add_header 'Access-Control-Allow-Methods' 'GET, POST, OPTIONS, PUT, DELETE' always;
         add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,X-Solana-PublicKey,X-Solana-Signature,X-Solana-Nonce,Authorization' always;
         add_header 'Access-Control-Expose-Headers' 'Content-Length,Content-Range' always;
-        add_header 'Access-Control-Allow-Credentials' 'true' always;
+        #add_header 'Access-Control-Allow-Credentials' 'true' always;
         
         # 正确处理OPTIONS预检请求
         if ($request_method = 'OPTIONS') {
