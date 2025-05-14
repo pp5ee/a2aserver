@@ -153,8 +153,8 @@ server {
         proxy_set_header Authorization $http_authorization;
         proxy_cache_bypass $http_upgrade;
         
-        # 设置CORS - 动态允许来源，提高灵活性
-        set $cors_origin $http_origin;
+        # # 设置CORS - 动态允许来源，提高灵活性
+        # set $cors_origin $http_origin;
         
         # 如果不需要限制域名，直接放开所有域
         add_header 'Access-Control-Allow-Origin' '*' always;
