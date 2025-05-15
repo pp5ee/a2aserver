@@ -2295,9 +2295,9 @@ class AgentStatusChecker:
         self.timer_thread = None
         self.stop_flag = False
         self.lock = threading.Lock()
-        self.interval = 120  # 增加到120秒检查一次，减少检查频率
-        self.max_retries = 2  # 检查失败时最大重试次数
-        self.retry_delay = 5  # 重试间隔(秒)
+        self.interval = 300  # 增加到300秒检查一次，减少检查频率
+        self.max_retries = 1  # 检查失败时最大重试次数
+        self.retry_delay = 2  # 重试间隔(秒)
         self.last_check_time = {}  # 记录每个代理最后一次检查时间
         self.agent_failures = {}  # 记录每个代理连续失败次数
         self.stable_agents = set()  # 记录稳定的代理，这些代理可以降低检查频率

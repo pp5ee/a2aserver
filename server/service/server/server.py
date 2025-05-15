@@ -526,15 +526,23 @@ class ConversationServer:
     
     # 如果没有获取到
     if not wallet_address and self.use_multi_user:
-       wallet_address='11111111111111111111111111111111'
+      return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": [],
+        "error": {
+          "code": -32000,
+          "message": "Invalid wallet address"
+        }
+      }
     
     # 获取会话相关的任务
     tasks_by_message_id = {}
     if self.use_multi_user and wallet_address:
       try:
         # 直接获取会话的所有任务
-        user_session_manager = UserSessionManager.get_instance()
-        conversation_tasks = user_session_manager.get_conversation_tasks(
+        #user_session_manager = UserSessionManager.get_instance()
+        conversation_tasks = self.user_session_manager.get_conversation_tasks(
           conversation_id=conversation_id,
           wallet_address=wallet_address
         )
@@ -1241,32 +1249,18 @@ class ConversationServer:
     
     # 如果没有钱包地址，使用默认行为
     if not wallet_address:
-        if not self.use_multi_user:
-            # 非多用户模式，返回默认管理器的代理
-            manager = self._get_user_manager(request)
-            return ListAgentResponse(result=manager.agents)
-        else:
-            # 多用户模式但没有钱包地址，返回空列表
-            logger.warning("获取代理列表时未提供钱包地址")
+        
             return ListAgentResponse(result=[])
     
     # 如果是多用户模式，从数据库获取代理信息
     if self.use_multi_user:
-        # 先刷新用户的代理列表
-        self.user_session_manager.refresh_user_agents(wallet_address)
+        # # 先刷新用户的代理列表
+        # self.user_session_manager.refresh_user_agents(wallet_address)
         
         # 从数据库查询代理信息
         agents = self.user_session_manager.queryAgentsByAddress(wallet_address)
         
-        # 添加调试日志
-        print("从数据库获取的代理信息:")
-        print(f"代理数量: {len(agents)}")
-        for i, agent in enumerate(agents):
-            print(f"代理 {i+1}:")
-            print(f"  URL: {agent.get('url')}")
-            print(f"  在线状态: {agent.get('is_online')}")
-            print(f"  过期时间: {agent.get('expire_at')}")
-            print(f"  NFT Mint ID: {agent.get('nft_mint_id')}")
+      
         
         # 返回格式化后的代理列表
         result = []
@@ -1310,20 +1304,6 @@ class ConversationServer:
         
         # 返回代理列表
         response = ListAgentResponse(result=result)
-        
-        # 调试日志
-        print("返回的响应:")
-        print(f"代理数量: {len(response.result) if response.result else 0}")
-        for i, agent in enumerate(response.result or []):
-            print(f"代理 {i+1}:")
-            if hasattr(agent, 'model_dump'):
-                agent_dict = agent.model_dump()
-                print(f"  URL: {agent_dict.get('url')}")
-                print(f"  在线状态: {agent_dict.get('is_online')}")
-                print(f"  过期时间: {agent_dict.get('expire_at')}")
-                print(f"  NFT Mint ID: {agent_dict.get('nft_mint_id')}")
-            else:
-                print(f"  数据: {agent}")
                 
         return response
     else:

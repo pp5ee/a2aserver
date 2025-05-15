@@ -343,7 +343,7 @@ agent_server = ConversationServer(router)
 app.include_router(router)
 
 # 创建全局的速率限制器实例，限制每个IP每分钟200次请求
-rate_limiter = RateLimiter(max_requests=200, time_window=60)
+rate_limiter = RateLimiter(max_requests=60, time_window=60)
 
 # 设置API文档（Swagger UI和ReDoc）
 try:
