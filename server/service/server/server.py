@@ -41,6 +41,12 @@ from concurrent.futures import ThreadPoolExecutor
 import sys
 import time
 from utils.solana_verifier import solana_verifier, sdk_available
+from hosts.multiagent.remote_agent_connection import (
+    TaskCallbackArg,
+)
+from utils.agent_card import get_agent_card
+from google.adk import Runner
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -97,7 +103,7 @@ class ConversationServer:
         methods=["POST"])
     router.add_api_route(
         "/conversation/list",
-        self._list_conversation,
+        self._list_conversations_in_db,
         methods=["POST"])
     router.add_api_route(
         "/conversation/delete",
@@ -643,6 +649,61 @@ class ConversationServer:
   async def _list_conversation(self, request: Request):
     manager = self._get_user_manager(request)
     return ListConversationResponse(result=manager.conversations)
+
+  async def _list_conversations_in_db(self, request: Request):
+    """
+    直接从数据库读取对话历史记录，而不通过ADK管理器。
+    这可以避免在第一次请求时的性能问题。
+    
+    Args:
+        request: FastAPI请求对象，包含用户的钱包地址
+        
+    Returns:
+        ListConversationResponse: 包含对话历史列表的响应对象
+    """
+    # 从请求头获取钱包地址
+    wallet_address = self._get_wallet_address(request)
+    if not wallet_address:
+      logger.warning("请求中缺少钱包地址，无法获取对话历史")
+      return ListConversationResponse(result=[])
+    
+    # 更新用户活跃状态
+    self._update_user_activity(wallet_address)
+    
+    # 直接访问用户会话管理器
+    user_session_manager = UserSessionManager.get_instance()
+    
+    # 检查是否内存模式，如果是则使用旧方法获取
+    if user_session_manager._memory_mode:
+      manager = self._get_user_manager(request)
+      return ListConversationResponse(result=manager.conversations)
+    
+    # 直接从数据库获取会话列表
+    try:
+      # 确保数据库连接有效
+      user_session_manager._ensure_db_connection()
+      
+      # 获取会话列表
+      db_conversations = user_session_manager.get_user_conversations(wallet_address)
+      
+      # 转换为Conversation对象列表
+      from service.types import Conversation
+      conversations = []
+      
+      for conv_data in db_conversations:
+        conversation = Conversation(
+          conversation_id=conv_data['conversation_id'],
+          name=conv_data.get('name', ''),
+          is_active=conv_data.get('is_active', True)
+        )
+        conversations.append(conversation)
+      
+      return ListConversationResponse(result=conversations)
+    except Exception as err:
+      logger.error(f"从数据库获取对话历史时出错: {err}")
+      # 出错时回退到使用管理器方法
+      manager = self._get_user_manager(request)
+      return ListConversationResponse(result=manager.conversations)
 
   async def _get_events(self, request: Request):
     manager = self._get_user_manager(request)
