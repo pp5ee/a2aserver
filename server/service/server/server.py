@@ -453,8 +453,7 @@ class ConversationServer:
                 messages = self.user_session_manager.get_conversation_messages(
                     conversation_id=conversation_id,
                     wallet_address=wallet_address,
-                    limit=1,
-                    role="agent"
+                    limit=1
                 )
                 
                 # 发送最新的代理消息

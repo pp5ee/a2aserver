@@ -35,6 +35,10 @@
           >
             <div class="conversation-title">{{ conv.name || '会话 ' + (conv.conversation_id ? conv.conversation_id.slice(0, 8) : '') }}</div>
             <div class="conversation-id">ID: {{ conv.conversation_id ? conv.conversation_id.slice(0, 8) + '...' : 'N/A' }}</div>
+            <!-- 显示会话中的消息数量 -->
+            <div class="conversation-message-count" v-if="conv.message_count !== undefined">
+              {{ conv.message_count }} 条消息
+            </div>
           </div>
           <button @click="createNewConversation" class="create-btn">创建新会话</button>
         </template>
@@ -71,10 +75,18 @@
                 </div>
               </div>
               
+              <!-- Agent Loading 状态指示器 -->
+              <div v-if="message.role === 'user' && isWaitingForAgentResponse(message)" class="agent-loading">
+                <div class="loading-spinner"></div>
+                <span>Agent 正在处理...</span>
+              </div>
+              
               <!-- 任务状态及产出物 (如果有) -->
               <div v-if="getTaskForMessage(message)" class="task-info">
                 <div class="task-status">
-                  <span class="task-state">状态: {{ getTaskForMessage(message)?.status?.state }}</span>
+                  <span class="task-state" :class="getTaskStateClass(getTaskForMessage(message)?.status?.state || '')">
+                    状态: {{ getTaskForMessage(message)?.status?.state || 'unknown' }}
+                  </span>
                   <span class="task-message" v-if="getTaskForMessage(message)?.status?.message">
                     {{ getTaskForMessage(message)?.status?.message }}
                   </span>
@@ -87,6 +99,19 @@
                     <div class="artifact-name">{{ artifact.name }}</div>
                     <div class="artifact-content">
                       <div v-for="(part, partIndex) in artifact.parts" :key="partIndex">
+                        <div v-if="part.type === 'text'" class="text-part">{{ part.text }}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                
+                <!-- 任务历史记录 -->
+                <div v-if="getTaskForMessage(message) && getTaskForMessage(message).history && getTaskForMessage(message).history.length > 0" class="task-history">
+                  <h4>任务历史:</h4>
+                  <div v-for="(historyItem, historyIndex) in getTaskForMessage(message)?.history || []" :key="historyIndex" class="history-item">
+                    <div class="history-role">{{ getRoleName(historyItem.role) }}</div>
+                    <div class="history-content">
+                      <div v-for="(part, partIndex) in historyItem.parts" :key="partIndex">
                         <div v-if="part.type === 'text'" class="text-part">{{ part.text }}</div>
                       </div>
                     </div>
@@ -124,6 +149,7 @@ interface Conversation {
   conversation_id: string;
   name?: string;
   is_active?: boolean;
+  message_count?: number;
 }
 
 interface MessagePart {
@@ -138,6 +164,7 @@ interface Message {
   parts: MessagePart[];
   metadata?: any;
   timestamp?: string;
+  waiting_for_response?: boolean;
 }
 
 interface TaskStatus {
@@ -194,6 +221,7 @@ export default defineComponent({
       messages: [] as Message[],
       tasks: [] as Task[],
       messageTasks: {} as Record<string, Task>, // 消息ID到任务的映射
+      messageResponses: {} as Record<string, boolean>, // 跟踪哪些用户消息已收到回复
       newMessage: '',
       wsConnected: false,
       walletConnected: false, // 添加钱包连接状态
@@ -272,6 +300,7 @@ export default defineComponent({
       this.messages = [];
       this.tasks = [];
       this.messageTasks = {};
+      this.messageResponses = {};
       
       // 加载历史消息
       await this.loadMessages();
@@ -297,11 +326,62 @@ export default defineComponent({
         const response = await apiService.listMessages(this.currentConversationId);
         if (response.data && response.data.result) {
           this.messages = response.data.result;
+          
+          // 分析已有的用户-代理消息对，更新messageResponses
+          this.updateMessageResponseStatus();
         }
       } catch (error) {
         console.error('加载消息失败:', error);
       } finally {
         this.loading.messages = false;
+      }
+    },
+    
+    // 更新消息响应状态
+    updateMessageResponseStatus() {
+      // 重置状态
+      this.messageResponses = {};
+      
+      // 遍历所有消息
+      let lastUserMessageId = null;
+      
+      for (const message of this.messages) {
+        if (message.role === 'user' && message.metadata && message.metadata.message_id) {
+          lastUserMessageId = message.metadata.message_id;
+          this.messageResponses[lastUserMessageId] = false;
+        } else if (message.role !== 'user' && lastUserMessageId) {
+          // 如果找到非用户的消息，将最后一个用户消息标记为已收到回复
+          this.messageResponses[lastUserMessageId] = true;
+          lastUserMessageId = null;
+        }
+      }
+    },
+    
+    // 判断是否正在等待Agent回复
+    isWaitingForAgentResponse(message: Message): boolean {
+      if (message.role !== 'user' || !message.metadata || !message.metadata.message_id) {
+        return false;
+      }
+      
+      const messageId = message.metadata.message_id;
+      return this.messageResponses[messageId] === false;
+    },
+    
+    // 获取任务状态样式类
+    getTaskStateClass(state?: string): string {
+      if (!state) return '';
+      
+      switch (state.toLowerCase()) {
+        case 'running':
+          return 'state-running';
+        case 'succeeded':
+          return 'state-succeeded';
+        case 'failed':
+          return 'state-failed';
+        case 'canceled':
+          return 'state-canceled';
+        default:
+          return '';
       }
     },
     
@@ -371,18 +451,24 @@ export default defineComponent({
       
       this.sending = true;
       try {
+        // 生成唯一消息ID
+        const messageId = this.generateUuid();
+        
         // 创建消息对象
         const messageObj = {
           role: 'user',
           parts: [{ type: 'text', text: this.newMessage.trim() }],
           metadata: {
             conversation_id: this.currentConversationId,
-            message_id: this.generateUuid()
+            message_id: messageId
           }
         };
         
         // 添加到消息列表
         this.messages.push(messageObj);
+        
+        // 初始化消息响应状态为未响应
+        this.messageResponses[messageId] = false;
         
         // 清空输入框
         const messageToBeSent = this.newMessage.trim();
@@ -396,10 +482,10 @@ export default defineComponent({
         // 发送消息
         await apiService.sendMessage(messageObj);
         
-        // 更新任务列表
+        // 立即加载任务
         setTimeout(() => {
           this.loadTasks();
-        }, 1000);
+        }, 500);
       } catch (error) {
         console.error('发送消息失败:', error);
       } finally {
@@ -456,6 +542,9 @@ export default defineComponent({
           // 添加到消息列表
           this.messages.push(newMessage);
           
+          // 更新消息响应状态
+          this.updateAgentResponseReceived(newMessage);
+          
           // 滚动到底部
           this.$nextTick(() => {
             this.scrollToBottom();
@@ -476,11 +565,12 @@ export default defineComponent({
         const existingTaskIndex = this.tasks.findIndex(t => t.id === task.id);
         
         if (existingTaskIndex !== -1) {
-          // 更新现有任务
+          // 更新现有任务，保留现有字段，并合并新数据
           this.tasks[existingTaskIndex] = {
             ...this.tasks[existingTaskIndex],
             status: task.status,
-            artifacts: task.artifacts || this.tasks[existingTaskIndex].artifacts
+            artifacts: task.artifacts || this.tasks[existingTaskIndex].artifacts,
+            history: task.history || this.tasks[existingTaskIndex].history
           };
           
           // 如果有message_id，更新关联
@@ -493,7 +583,8 @@ export default defineComponent({
             id: task.id,
             sessionId: task.sessionId,
             status: task.status,
-            artifacts: task.artifacts
+            artifacts: task.artifacts,
+            history: task.history
           };
           
           // 如果有message_id，添加到任务对象中
@@ -515,7 +606,25 @@ export default defineComponent({
           // 如果没有message_id，使用现有逻辑
           this.updateMessageTaskMapping();
         }
+        
+        // 触发视图更新，刷新界面显示
+        this.$forceUpdate();
       });
+    },
+    
+    // 更新代理回复状态
+    updateAgentResponseReceived(message: Message) {
+      if (message.role !== 'user') {
+        // 查找最后一条用户消息
+        for (let i = this.messages.length - 1; i >= 0; i--) {
+          const msg = this.messages[i];
+          if (msg.role === 'user' && msg.metadata && msg.metadata.message_id) {
+            // 设置此用户消息已收到回复
+            this.messageResponses[msg.metadata.message_id] = true;
+            break;
+          }
+        }
+      }
     },
     
     // 滚动到底部
@@ -717,6 +826,12 @@ export default defineComponent({
   color: #757575;
 }
 
+.conversation-message-count {
+  font-size: 11px;
+  color: #757575;
+  margin-top: 5px;
+}
+
 .message-wrapper {
   margin-bottom: 20px;
 }
@@ -752,77 +867,42 @@ export default defineComponent({
   color: #757575;
 }
 
+.message-body {
+  word-break: break-word;
+}
+
 .message-part {
   margin-bottom: 8px;
 }
 
-.data-part pre {
-  background-color: #f5f5f5;
-  padding: 8px;
+.test-result {
+  margin-left: 10px;
+  padding: 5px 10px;
   border-radius: 4px;
-  overflow-x: auto;
-  font-size: 12px;
-  margin: 0;
+  font-size: 14px;
 }
 
-.task-info {
-  margin-top: 10px;
-  margin-left: 20px;
-  padding: 10px;
-  border-left: 3px solid #9e9e9e;
+.test-result.success {
+  background-color: #e8f5e9;
+  color: #2e7d32;
 }
 
-.task-status {
-  display: flex;
-  align-items: center;
-  margin-bottom: 10px;
-}
-
-.task-state {
-  background-color: #616161;
-  color: white;
-  padding: 3px 8px;
-  border-radius: 20px;
-  font-size: 12px;
-  margin-right: 10px;
-}
-
-.task-artifacts {
-  margin-top: 10px;
-}
-
-.task-artifacts h4 {
-  margin-top: 0;
-  margin-bottom: 8px;
-}
-
-.artifact {
-  margin-bottom: 10px;
-}
-
-.artifact-name {
-  font-weight: bold;
-  margin-bottom: 5px;
-}
-
-.artifact-content {
-  background-color: #f5f5f5;
-  padding: 8px;
-  border-radius: 4px;
-  font-family: monospace;
-  white-space: pre-wrap;
+.test-result.error {
+  background-color: #ffebee;
+  color: #d32f2f;
 }
 
 .message-input {
   display: flex;
+  margin-top: 10px;
 }
 
 .message-input textarea {
   flex: 1;
+  height: 80px;
   padding: 10px;
   border: 1px solid #e0e0e0;
-  border-radius: 8px;
-  min-height: 80px;
+  border-radius: 4px;
   resize: none;
   margin-right: 10px;
 }
@@ -832,7 +912,7 @@ export default defineComponent({
   background-color: #2196f3;
   color: white;
   border: none;
-  border-radius: 8px;
+  border-radius: 4px;
   cursor: pointer;
 }
 
@@ -845,69 +925,142 @@ export default defineComponent({
   cursor: not-allowed;
 }
 
-.loading, .empty-list, .select-prompt {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  height: 100px;
-  color: #757575;
+.test-btn {
+  padding: 8px 16px;
+  background-color: #2196f3;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
 }
 
-.select-prompt {
-  height: 200px;
-  font-size: 18px;
+.test-btn:disabled {
+  background-color: #bdbdbd;
+  cursor: not-allowed;
 }
 
 .create-btn {
-  width: 100%;
-  padding: 10px;
+  padding: 8px 16px;
   background-color: #4caf50;
   color: white;
   border: none;
-  border-radius: 8px;
+  border-radius: 4px;
   cursor: pointer;
   margin-top: 10px;
+  width: 100%;
 }
 
 .create-btn:hover {
   background-color: #388e3c;
 }
 
+.empty-list {
+  text-align: center;
+  padding: 20px;
+  color: #757575;
+}
+
+.select-prompt {
+  text-align: center;
+  padding: 40px;
+  color: #757575;
+  font-size: 18px;
+}
+
+.loading {
+  text-align: center;
+  padding: 20px;
+  color: #757575;
+}
+
+.task-info {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 4px;
+  background-color: #f9f9f9;
+  font-size: 14px;
+}
+
+.task-status {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.task-state {
+  font-weight: bold;
+  margin-right: 10px;
+}
+
+.state-running {
+  color: #2196f3;
+}
+
+.state-succeeded {
+  color: #4caf50;
+}
+
+.state-failed {
+  color: #f44336;
+}
+
+.state-canceled {
+  color: #ff9800;
+}
+
+.task-message {
+  color: #616161;
+}
+
+.task-artifacts, .task-history {
+  margin-top: 10px;
+}
+
+.artifact, .history-item {
+  margin-bottom: 8px;
+  padding: 8px;
+  background-color: #f5f5f5;
+  border-radius: 4px;
+}
+
+.artifact-name, .history-role {
+  font-weight: bold;
+  margin-bottom: 5px;
+}
+
+.artifact-content, .history-content {
+  white-space: pre-wrap;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.agent-loading {
+  display: flex;
+  align-items: center;
+  margin-top: 8px;
+  padding: 8px;
+  background-color: #e8f5e9;
+  border-radius: 4px;
+  color: #388e3c;
+}
+
+.loading-spinner {
+  width: 16px;
+  height: 16px;
+  margin-right: 8px;
+  border: 2px solid #388e3c;
+  border-radius: 50%;
+  border-top-color: transparent;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
 .ws-test-actions {
   display: flex;
   align-items: center;
-  margin-left: 20px;
-}
-
-.test-btn {
-  padding: 8px 16px;
-  background-color: #1976d2;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  font-weight: bold;
-}
-
-.test-btn:hover {
-  background-color: #1565c0;
-}
-
-.test-btn:disabled {
-  background-color: #cccccc;
-  cursor: not-allowed;
-}
-
-.test-result {
-  margin-left: 10px;
-  font-weight: bold;
-}
-
-.test-result.success {
-  color: #2e7d32;
-}
-
-.test-result.error {
-  color: #d32f2f;
 }
 </style> 
