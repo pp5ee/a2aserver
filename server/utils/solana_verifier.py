@@ -379,7 +379,7 @@ async def get_user_subscriptions(wallet_address: str) -> List[Dict[str, Any]]:
                             'agent_url': agent_url,
                             'expire_at': expire_at
                         })
-                        logger.info(f"添加有效订阅: mint={nft_mint_id}, url={agent_url}, 过期时间={expire_at}")
+                       
                     else:
                         logger.debug(f"跳过已过期订阅: mint={nft_mint_id}, 过期时间={expire_at}")
                         
@@ -401,7 +401,7 @@ async def get_user_subscriptions(wallet_address: str) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"获取用户 {wallet_address} 的NFT订阅时出错: {e}")
         import traceback
-        logger.error(traceback.format_exc())
+        
         return []
 
 async def get_nft_metadata_url_direct(rpc_url: str, agent_nft_pda: str) -> str:

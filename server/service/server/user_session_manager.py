@@ -919,8 +919,7 @@ class UserSessionManager:
                         metadata=metadata
                     )
                     
-                    # 调试输出 - 帮助确认消息格式是否正确
-                    print(f"重建消息: {message_id}, 角色: {msg_role}, 内容类型: {len(parts)}")
+                    
                     
                     messages.append(message)
                 except Exception as e:
@@ -1539,15 +1538,15 @@ class UserSessionManager:
                     agent_url = sub.get('agent_url')
                     expire_at = sub.get('expire_at')
                     
-                    logger.info(f"处理订阅: mint={nft_mint_id}, url={agent_url}, 过期时间={expire_at}")
+                   
                     
                     if not all([nft_mint_id, agent_url, expire_at]):
-                        logger.warning(f"订阅数据不完整: {sub}")
+                       
                         continue
                     
                     # 确保expire_at是datetime对象
                     if not isinstance(expire_at, datetime.datetime):
-                        logger.warning(f"过期时间不是datetime对象: {type(expire_at)}, 值: {expire_at}")
+                       
                         # 尝试转换
                         try:
                             if isinstance(expire_at, (int, float)):
@@ -1568,7 +1567,7 @@ class UserSessionManager:
                     
                     if existing:
                         # 更新现有记录，暂时保留is_online状态为unknown，后续立即检查
-                        logger.info(f"更新现有NFT订阅: mint={nft_mint_id}, url={agent_url}")
+                        
                         try:
                             cursor.execute(
                                 """
@@ -1593,7 +1592,7 @@ class UserSessionManager:
                                     """,
                                     (agent_url, expire_at_str, wallet_address, nft_mint_id)
                                 )
-                                logger.info(f"使用字符串格式更新成功: {expire_at_str}")
+                                
                                 # 添加到需要检查的代理列表
                                 agents_to_check.append((existing[0], agent_url))
                             except Exception as retry_err:

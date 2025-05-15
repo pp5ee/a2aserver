@@ -1491,7 +1491,7 @@ class ConversationServer:
     # 验证签名 - 如果需要签名
     if not nonce or not signature:
       await websocket.close(code=1008, reason="Missing authentication data (nonce or signature)")
-      logger.warning(f"WebSocket连接被拒绝: 缺少签名信息, wallet={wallet_address[:10]}...")
+      logger.warning(f"WebSocket连接被拒绝: 缺少签名信息, wallet={wallet_address[:10] if len(wallet_address) > 10 else wallet_address}...")
       return
     
     # 验证签名 - 与HTTP接口使用相同的验证逻辑
@@ -1510,16 +1510,19 @@ class ConversationServer:
           
           if current_time > nonce_timestamp:
             await websocket.close(code=1008, reason="Signature expired, please sign again")
-            logger.warning(f"WebSocket连接被拒绝: 签名已过期, wallet={wallet_address[:10]}...")
+            logger.warning(f"WebSocket连接被拒绝: 签名已过期, wallet={wallet_address[:10] if len(wallet_address) > 10 else wallet_address}...")
           else:
             await websocket.close(code=1008, reason="Invalid signature")
-            logger.warning(f"WebSocket连接被拒绝: 签名无效, wallet={wallet_address[:10]}...")
+            logger.warning(f"WebSocket连接被拒绝: 签名无效, wallet={wallet_address[:10] if len(wallet_address) > 10 else wallet_address}...")
         except:
           await websocket.close(code=1008, reason="Invalid nonce format")
-          logger.warning(f"WebSocket连接被拒绝: nonce格式无效, wallet={wallet_address[:10]}...")
+          logger.warning(f"WebSocket连接被拒绝: nonce格式无效, wallet={wallet_address[:10] if len(wallet_address) > 10 else wallet_address}...")
         return
       
-      logger.info(f"WebSocket连接签名验证成功: wallet={wallet_address[:10]}...")
+      # 记录连接前的WebSocket状态
+      pre_connect_connections = self.ws_manager.get_active_connections_count()
+      pre_connect_wallet_connections = self.ws_manager.get_active_connections_count(wallet_address)
+      logger.info(f"WebSocket连接签名验证成功: wallet={wallet_address[:10] if len(wallet_address) > 10 else wallet_address}... (连接前: 总连接数={pre_connect_connections}, 当前钱包连接数={pre_connect_wallet_connections})")
     except Exception as e:
       # 验证过程发生异常
       await websocket.close(code=1008, reason="Authentication error")
@@ -1529,13 +1532,34 @@ class ConversationServer:
     # 建立连接
     await self.ws_manager.connect(websocket, wallet_address)
     
+    # 记录连接后的WebSocket状态
+    post_connect_connections = self.ws_manager.get_active_connections_count()
+    post_connect_wallet_connections = self.ws_manager.get_active_connections_count(wallet_address)
+    logger.info(f"WebSocket连接已建立: wallet={wallet_address[:10] if len(wallet_address) > 10 else wallet_address}... (连接后: 总连接数={post_connect_connections}, 当前钱包连接数={post_connect_wallet_connections})")
+    
     try:
       # 发送连接成功消息
       await websocket.send_text(json.dumps({
         "type": "connection_established",
-        "message": "WebSocket连接已成功建立",
-        "wallet_address": wallet_address
+        "message": "WebSocket established",
+        "wallet_address": wallet_address,
+        "connection_info": {
+          "total_connections": post_connect_connections,
+          "wallet_connections": post_connect_wallet_connections
+        }
       }))
+      
+      # 添加连接诊断测试消息
+      test_message = {
+        "type": "connection_test",
+        "timestamp": time.time() * 1000,
+        "message": "WebSocket连接测试消息"
+      }
+      
+      # 使用单独的任务发送测试消息，避免阻塞主流程
+      asyncio.create_task(
+        self.ws_manager.send_message(wallet_address, test_message)
+      )
       
       # 监听客户端消息
       while True:
@@ -1545,22 +1569,49 @@ class ConversationServer:
         # 处理心跳消息
         try:
           message = json.loads(data)
-          if message.get("type") == "ping":
-            await websocket.send_text(json.dumps({
+          message_type = message.get("type")
+          
+          if message_type == "ping":
+            # 发送pong响应
+            pong_response = {
               "type": "pong",
-              "timestamp": message.get("timestamp")
-            }))
+              "timestamp": message.get("timestamp"),
+              "server_time": int(time.time() * 1000)
+            }
+            await websocket.send_text(json.dumps(pong_response))
+            
+          elif message_type == "connection_check":
+            # 连接状态检查
+            connection_info = {
+              "type": "connection_status",
+              "timestamp": int(time.time() * 1000),
+              "wallet_address": wallet_address,
+              "is_connected": True,
+            }
+            await websocket.send_text(json.dumps(connection_info))
         except Exception as e:
           logger.error(f"处理WebSocket消息时出错: {e}")
     
     except WebSocketDisconnect:
       # 客户端断开连接
-      logger.info(f"客户端断开WebSocket连接: {wallet_address}")
+      logger.info(f"客户端断开WebSocket连接: {wallet_address[:10] if len(wallet_address) > 10 else wallet_address}...")
     except Exception as e:
       logger.error(f"WebSocket连接出错: {e}")
     finally:
+      # 记录断开前状态
+      pre_disconnect_connections = self.ws_manager.get_active_connections_count()
+      pre_disconnect_wallet_connections = self.ws_manager.get_active_connections_count(wallet_address)
+      
       # 断开连接
       await self.ws_manager.disconnect(websocket, wallet_address)
+      
+      # 记录断开后状态
+      post_disconnect_connections = self.ws_manager.get_active_connections_count()
+      post_disconnect_wallet_connections = self.ws_manager.get_active_connections_count(wallet_address)
+      
+      logger.info(f"WebSocket连接已清理: wallet={wallet_address[:10] if len(wallet_address) > 10 else wallet_address}... " +
+                 f"(断开前: 总={pre_disconnect_connections}, 钱包={pre_disconnect_wallet_connections}; " +
+                 f"断开后: 总={post_disconnect_connections}, 钱包={post_disconnect_wallet_connections})")
 
   def notify_task_status_update(self, task) -> None:
     """通知任务状态更新"""

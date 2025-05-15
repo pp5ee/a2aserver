@@ -761,7 +761,7 @@ if __name__ == "__main__":
         port=port,
         reload=os.environ.get("DEBUG_MODE", "") == "true",
         reload_includes=["*.py", "*.js"] if os.environ.get("DEBUG_MODE", "") == "true" else None,
-        workers=int(os.environ.get("UVICORN_WORKERS", "2")),  # 可通过环境变量调整工作进程数
+        workers=int(os.environ.get("UVICORN_WORKERS", "1")),  # 可通过环境变量调整工作进程数
         timeout_keep_alive=120,  # 增加keep-alive超时时间
         timeout_graceful_shutdown=30,  # 设置优雅关闭的超时时间
         loop="uvloop",  # 使用uvloop作为事件循环实现，比asyncio默认循环更高效

@@ -21,7 +21,7 @@ def get_agent_card(remote_agent_address: str) -> AgentCard:
       remote_agent_address += "/"
     remote_agent_address += ".well-known/agent.json"
   
-  logger.info(f"获取代理卡片，请求URL: {remote_agent_address}")
+ 
   
   # 确保使用http://开头的URL
   if not (remote_agent_address.startswith("http://") or remote_agent_address.startswith("https://")):
@@ -32,5 +32,5 @@ def get_agent_card(remote_agent_address: str) -> AgentCard:
     agent_card.raise_for_status()  # 确保请求成功
     return AgentCard(**agent_card.json())
   except requests.exceptions.RequestException as e:
-    logger.error(f"获取代理卡片失败: {e}")
+ 
     raise
