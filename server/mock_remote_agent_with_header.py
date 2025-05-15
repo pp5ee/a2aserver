@@ -43,8 +43,8 @@ class TaskRequest(BaseModel):
     # 添加兼容处理，同时支持不同格式的请求
     @classmethod
     def parse_request(cls, request_data: Dict[str, Any]) -> "TaskRequest":
-        # 打印原始请求数据用于调试
-        logger.info(f"原始请求数据: {json.dumps(request_data, default=str)}")
+        
+        
         
         if "task" in request_data:
             return cls(**request_data)
@@ -109,10 +109,9 @@ AGENT_CARD = {
 
 # 打印所有请求头信息
 async def log_headers(request: Request):
-    logger.info("------请求头信息------")
-    for header_name, header_value in request.headers.items():
-        logger.info(f"{header_name}: {header_value}")
-    logger.info("---------------------")
+    
+    
+
     return request.headers
 
 # 验证鉴权头的依赖函数

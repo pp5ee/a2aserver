@@ -285,7 +285,7 @@ Current agent: {current_agent['active_agent']}
     if task.artifacts:
       logging.info(f"Task has {len(task.artifacts)} artifacts")
       for artifact in task.artifacts:
-        logging.error(f"Artifacts in adk host: {artifact}")
+        
         response.extend(convert_parts(artifact.parts, tool_context))
     logging.info(f"Task completed, returning response: {len(response)} items")
     return response

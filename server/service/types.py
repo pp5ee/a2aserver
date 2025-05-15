@@ -45,7 +45,11 @@ class ListMessageRequest(JSONRPCRequest):
   params: str
 
 class ListMessageResponse(JSONRPCResponse):
+  """标准消息响应类，符合JSONRPC 2.0规范"""
+  jsonrpc: Literal["2.0"] = "2.0"
+  id: str = Field(default_factory=lambda: uuid4().hex)
   result: list[Message] | None = None
+  error: JSONRPCError | None = None
 
 class MessageInfo(BaseModel):
   message_id: str
@@ -82,7 +86,11 @@ class ListTaskRequest(JSONRPCRequest):
   method: Literal["task/list"] = "task/list"
 
 class ListTaskResponse(JSONRPCResponse):
+  """标准任务响应类，符合JSONRPC 2.0规范"""
+  jsonrpc: Literal["2.0"] = "2.0"
+  id: str = Field(default_factory=lambda: uuid4().hex)
   result: list[Task] | None = None
+  error: JSONRPCError | None = None
 
 class RegisterAgentRequest(JSONRPCRequest):
   method: Literal["agent/register"] = "agent/register"

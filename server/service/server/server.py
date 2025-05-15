@@ -520,6 +520,7 @@ class ConversationServer:
   async def _list_messages(self, request: Request):
     message_data = await request.json()
     conversation_id = message_data['params']
+    request_id = message_data.get('id', str(uuid.uuid4()))
     
     # 获取用户钱包地址
     wallet_address = self._get_wallet_address(request)
@@ -528,21 +529,66 @@ class ConversationServer:
     if not wallet_address and self.use_multi_user:
        wallet_address='11111111111111111111111111111111'
     
+    # 获取会话相关的任务
+    tasks_by_message_id = {}
+    if self.use_multi_user and wallet_address:
+      try:
+        # 直接获取会话的所有任务
+        user_session_manager = UserSessionManager.get_instance()
+        conversation_tasks = user_session_manager.get_conversation_tasks(
+          conversation_id=conversation_id,
+          wallet_address=wallet_address
+        )
+        
+     
+        # 创建消息ID到任务的映射
+        for task_data in conversation_tasks:
+          # 检查任务数据是否完整
+          if 'data' in task_data and isinstance(task_data['data'], dict):
+            task_obj = task_data['data']
+            
+            # 将任务关联到状态消息
+            if 'status' in task_obj and task_obj['status'] and 'message' in task_obj['status']:
+              status_msg = task_obj['status']['message']
+              if status_msg and 'metadata' in status_msg and 'message_id' in status_msg['metadata']:
+                msg_id = status_msg['metadata']['message_id']
+                if msg_id:
+                  tasks_by_message_id[msg_id] = task_data
+                  logger.info(f"将任务 {task_data.get('id', 'unknown')} 关联到消息 {msg_id}")
+                  
+            # 将任务关联到历史消息
+            if 'history' in task_obj and task_obj['history']:
+              for history_msg in task_obj['history']:
+                if history_msg and isinstance(history_msg, dict) and 'metadata' in history_msg and 'message_id' in history_msg['metadata']:
+                  msg_id = history_msg['metadata']['message_id']
+                  if msg_id:
+                    tasks_by_message_id[msg_id] = task_data
+                    logger.info(f"将任务 {task_data.get('id', 'unknown')} 关联到历史消息 {msg_id}")
+        
+        logger.info(f"任务映射表: {list(tasks_by_message_id.keys())}")
+      except Exception as e:
+        logger.error(f"获取任务信息时出错: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+    
     # 如果是多用户模式且能获取到钱包地址，从数据库读取消息
+    messages = []
     if self.use_multi_user and wallet_address:
       try:
         # 从数据库获取消息，同时使用wallet_address和conversation_id确保查询正确
-        messages = self.user_session_manager.get_conversation_messages(
+        db_messages = self.user_session_manager.get_conversation_messages(
             conversation_id=conversation_id,
             wallet_address=wallet_address,
             limit=20
         )
-        if messages:
+        logger.info(f"从数据库获取到 {len(db_messages) if db_messages else 0} 条消息")
+        
+        if db_messages:
           # 将数据库格式的消息转换为Message对象
           from common.types import Message, TextPart, DataPart, FilePart, FileContent
           converted_messages = []
           
-          for msg_data in messages:
+          for msg_data in db_messages:
             try:
               # 从内容构建消息对象
               content = msg_data.get('content', {})
@@ -566,7 +612,8 @@ class ConversationServer:
                       parts.append(FilePart(file=file_content))
                 
                 # 处理元数据
-                metadata = {'message_id': msg_data.get('message_id'), 'conversation_id': conversation_id}
+                message_id = msg_data.get('message_id')
+                metadata = {'message_id': message_id, 'conversation_id': conversation_id}
                 if 'metadata' in content:
                   for key, value in content.get('metadata', {}).items():
                     metadata[key] = value
@@ -577,6 +624,22 @@ class ConversationServer:
                   parts=parts,
                   metadata=metadata
                 )
+                
+                # 添加关联的任务信息
+                if message_id in tasks_by_message_id:
+                  task_data = tasks_by_message_id[message_id]
+                  task_info = self._prepare_task_for_message(task_data)
+                  
+                  if task_info:
+                    # 直接赋值确保元数据被正确更新
+                    if not hasattr(message, 'metadata') or message.metadata is None:
+                      message.metadata = {}
+                    
+                    # 将任务信息添加到消息元数据中
+                    if 'tasks' not in message.metadata:
+                      message.metadata['tasks'] = []
+                    message.metadata['tasks'].append(task_info)
+                    logger.info(f"消息 {message_id} 添加任务成功")
                 
                 converted_messages.append(message)
               else:
@@ -590,30 +653,127 @@ class ConversationServer:
                 
             except Exception as e:
               logger.error(f"转换消息格式出错: {e}")
+              import traceback
+              logger.error(traceback.format_exc())
           
-          # 返回处理后的消息
-          return ListMessageResponse(result=self.cache_content(converted_messages))
+          messages = converted_messages
       except Exception as e:
         logger.error(f"从数据库读取消息时出错: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
     
-    # 如果不是多用户模式或无法从数据库获取，则使用原有的内存模式
-    manager = self._get_user_manager(request)
-    conversation = manager.get_conversation(conversation_id)
-    
-    if conversation:
-      # 限制返回最新的10条消息
-      if hasattr(conversation, 'messages') and len(conversation.messages) > 10:
-        messages_to_return = conversation.messages[-10:]
-      else:
-        messages_to_return = conversation.messages
+    # 如果没有从数据库获取到消息，则从内存中获取
+    if not messages:
+      # 从内存获取消息
+      manager = self._get_user_manager(request)
+      conversation = manager.get_conversation(conversation_id)
       
-      return ListMessageResponse(result=self.cache_content(messages_to_return))
+      if conversation:
+        # 限制返回最新的10条消息
+        if hasattr(conversation, 'messages') and len(conversation.messages) > 10:
+          messages = conversation.messages[-10:]
+        else:
+          messages = conversation.messages
+        
+        logger.info(f"从内存获取到 {len(messages) if messages else 0} 条消息")
+        
+        # 添加任务信息到消息
+        for message in messages:
+          if hasattr(message, 'metadata') and message.metadata:
+            message_id = message.metadata.get('message_id')
+            if message_id and message_id in tasks_by_message_id:
+              task_data = tasks_by_message_id[message_id]
+              task_info = self._prepare_task_for_message(task_data)
+              logger.info(f"为内存消息 {message_id} 添加任务信息: {task_info is not None}")
+              if task_info:
+                # 将任务信息添加到消息元数据中
+                if not hasattr(message, 'metadata') or message.metadata is None:
+                  message.metadata = {}
+                
+                if 'tasks' not in message.metadata:
+                  message.metadata['tasks'] = []
+                message.metadata['tasks'].append(task_info)
+                logger.info(f"内存消息 {message_id} 添加任务成功")
     
-    return ListMessageResponse(result=[])
+    # 处理内容并返回
+    processed_messages = self.cache_content(messages)
+    
+    # 检查处理后的消息是否包含任务信息
+    task_count = 0
+    for msg in processed_messages:
+      if hasattr(msg, 'metadata') and msg.metadata and 'tasks' in msg.metadata:
+        task_count += 1
+    
+    logger.info(f"响应包含 {len(processed_messages)} 条消息，其中 {task_count} 条包含任务信息")
+    
+    # 返回JSONRPC 2.0格式的响应
+    return {
+      "jsonrpc": "2.0",
+      "id": request_id,
+      "result": processed_messages,
+      "error": None
+    }
+    
+  def _prepare_task_for_message(self, task_data):
+    """将任务数据准备为消息可用的格式"""
+    try:
+      # 确保任务数据完整
+      if not task_data or not isinstance(task_data, dict):
+        return None
+      
+      task_id = task_data.get('id') or task_data.get('task_id')
+      session_id = task_data.get('sessionId') or task_data.get('session_id')
+      
+      # 使用_format_task_for_client的逻辑处理复杂的任务对象
+      if 'data' in task_data and isinstance(task_data['data'], dict):
+        task_obj = task_data['data']
+        
+        # 构建一个标准格式的任务对象
+        formatted_task = {
+          "id": task_obj.get('id') or task_id,
+          "sessionId": task_obj.get('sessionId') or session_id,
+          "status": {
+            "state": task_data.get('state', 'completed'),
+            "timestamp": task_data.get('updated_at', datetime.datetime.now().isoformat())
+          }
+        }
+        
+        # 添加消息信息
+        if 'status' in task_obj and task_obj['status'] and 'message' in task_obj['status']:
+          formatted_task['status']['message'] = task_obj['status']['message']
+        
+        # 添加制品信息
+        if 'artifacts' in task_obj and task_obj['artifacts']:
+          formatted_task['artifacts'] = task_obj['artifacts']
+        
+        # 添加历史信息
+        if 'history' in task_obj and task_obj['history']:
+          formatted_task['history'] = task_obj['history']
+        
+        return formatted_task
+      
+      # 简化版的任务信息
+      return {
+        "id": task_id,
+        "sessionId": session_id,
+        "status": {
+          "state": task_data.get('state', 'completed'),
+          "timestamp": task_data.get('updated_at', datetime.datetime.now().isoformat())
+        }
+      }
+    except Exception as e:
+      logger.error(f"准备任务数据时出错: {e}")
+      import traceback
+      logger.error(traceback.format_exc())
+      return None
 
   def cache_content(self, messages: list[Message]):
+    """处理消息内容，确保保留元数据中的任务信息"""
     rval = []
     for m in messages:
+      # 保存原始元数据
+      original_metadata = m.metadata.copy() if hasattr(m, 'metadata') and m.metadata else {}
+      
       message_id = get_message_id(m)
       if not message_id:
         rval.append(m)
@@ -639,6 +799,13 @@ class ConversationServer:
         if cache_id not in self._file_cache:
           self._file_cache[cache_id] = part
       m.parts = new_parts
+      
+      # 确保任务信息不丢失
+      if 'tasks' in original_metadata and original_metadata['tasks']:
+        if not hasattr(m, 'metadata') or m.metadata is None:
+          m.metadata = {}
+        m.metadata['tasks'] = original_metadata['tasks']
+      
       rval.append(m)
     return rval
 
@@ -717,20 +884,24 @@ class ConversationServer:
       message_data = await request.json()
       # 尝试获取conversation_id参数
       conversation_id = message_data.get('conversation_id', None)
+      request_id = message_data.get('id', str(uuid.uuid4()))
     except:
       # 如果无法解析JSON或没有参数，默认为None
       conversation_id = None
+      request_id = str(uuid.uuid4())
     
     # 获取用户钱包地址
     wallet_address = self._get_wallet_address(request)
     
-    # 现有逻辑：从内存中获取任务
+    # 从内存中获取任务
     memory_tasks = manager.tasks
+    logger.info(f"从内存获取到 {len(memory_tasks)} 个任务")
     
     # 如果指定了conversation_id，过滤内存中的任务
     if conversation_id:
       memory_tasks = [task for task in memory_tasks if 
                      hasattr(task, 'sessionId') and task.sessionId == conversation_id]
+      logger.info(f"过滤会话 {conversation_id} 后剩余 {len(memory_tasks)} 个任务")
     
     # 如果是多用户模式且有钱包地址，尝试从数据库获取更多任务信息
     if self.use_multi_user and wallet_address:
@@ -740,7 +911,9 @@ class ConversationServer:
         
         # 如果数据库中有会话但运行在内存模式，仅返回内存中的任务
         if user_session_manager._memory_mode:
-          return ListTaskResponse(result=memory_tasks)
+          formatted_tasks = [self._format_task_for_client(task) for task in memory_tasks]
+          logger.info(f"内存模式返回 {len(formatted_tasks)} 个任务")
+          return ListTaskResponse(id=request_id, result=formatted_tasks)
         
         # 查询任务
         db_tasks = []
@@ -753,6 +926,7 @@ class ConversationServer:
           )
           if tasks:
             db_tasks.extend(tasks)
+            logger.info(f"从数据库获取到会话 {conversation_id} 的 {len(tasks)} 个任务")
         else:
           # 否则查询所有会话的任务
           conversations = user_session_manager.get_user_conversations(wallet_address)
@@ -767,6 +941,9 @@ class ConversationServer:
               )
               if tasks:
                 db_tasks.extend(tasks)
+                logger.info(f"从数据库获取到会话 {conv_id} 的 {len(tasks)} 个任务")
+        
+        logger.info(f"从数据库总共获取 {len(db_tasks)} 个任务")
         
         # 合并内存中的任务和数据库中的任务，确保没有重复
         if db_tasks:
@@ -776,140 +953,223 @@ class ConversationServer:
           
           # 获取内存中任务的ID列表
           memory_task_ids = [t.id for t in memory_tasks]
+          logger.info(f"内存中已有的任务ID: {memory_task_ids}")
           
-          # 将数据库中的任务添加到结果中（如果不在内存中）
+          # 直接使用我们自己的格式化方法处理数据库任务
           for db_task in db_tasks:
-            if db_task['id'] not in memory_task_ids:
-              # 创建一个基本的Task对象
-              try:
-                status = TaskStatus(
-                  state=db_task['state'] if db_task['state'] else TaskState.UNKNOWN,
-                  timestamp=datetime.now()
-                )
+            try:
+              task_id = db_task.get('id') or db_task.get('task_id')
+              
+              # 检查任务是否已经在内存中
+              if task_id in memory_task_ids:
+                logger.info(f"任务 {task_id} 已在内存中存在，跳过添加")
+                continue
+              
+              # 使用_prepare_task_for_message将任务数据转换为标准格式
+              formatted_task = self._prepare_task_for_message(db_task)
+              
+              if formatted_task:
+                logger.info(f"成功转换数据库任务 {task_id}")
                 
-                task = Task(id=db_task['id'], sessionId=db_task['sessionId'], status=status)
-                
-                # 添加 message_id 字段
-                if 'message_id' in db_task:
-                    task.message_id = db_task['message_id']
-                
-                # 处理任务的历史消息
-                if 'data' in db_task and 'history' in db_task['data']:
-                  try:
-                    from common.types import Message
-                    history_messages = []
-                    
-                    for history_item in db_task['data']['history']:
-                      # 创建消息部分
-                      message_parts = []
-                      for part in history_item.get('parts', []):
-                        if isinstance(part, dict) and 'type' in part:
-                          if part['type'] == 'text' and 'text' in part:
-                            message_parts.append(TextPart(text=part['text']))
-                          elif part['type'] == 'data' and 'data' in part:
-                            message_parts.append(DataPart(data=part['data']))
-                          elif part['type'] == 'file' and 'file' in part:
-                            file_content = FileContent(**part['file'])
-                            message_parts.append(FilePart(file=file_content))
-                        else:
-                          # 默认处理为文本
-                          text_content = part.get('content', str(part))
-                          message_parts.append(TextPart(text=text_content))
-                      
-                      # 创建消息对象
-                      message = Message(
-                        role=history_item.get('role', 'user'),
-                        parts=message_parts,
-                        metadata=history_item.get('metadata', {})
-                      )
-                      history_messages.append(message)
-                    
-                    # 设置任务的历史消息
-                    task.history = history_messages
-                  except Exception as e:
-                    print(f"处理任务历史消息时出错: {e}")
-                
-                # 添加到结果列表
-                memory_tasks.append(task)
-              except Exception as e:
-                print(f"转换数据库任务时出错: {e}")
+                # 将格式化后的任务添加到响应列表，避免Task类的限制
+                memory_tasks.append({
+                  "id": formatted_task["id"],
+                  "sessionId": formatted_task["sessionId"],
+                  "status": formatted_task["status"],
+                  "artifacts": formatted_task.get("artifacts", []),
+                  "history": formatted_task.get("history", []),
+                  "metadata": formatted_task.get("metadata", {})
+                })
+            except Exception as e:
+              logger.error(f"转换数据库任务时出错: {e}")
+              import traceback
+              logger.error(traceback.format_exc())
       except Exception as e:
         # 错误处理不应影响现有流程
-        print(f"获取数据库任务时出错: {e}")
+        logger.error(f"获取数据库任务时出错: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
     
-    # 处理 message_id 字段
+    # 格式化响应
+    formatted_tasks = []
+    
+    # 分别处理不同类型的任务对象
     for task in memory_tasks:
-        # 如果任务对象中没有 message_id 属性，添加一个
-        if not hasattr(task, 'message_id'):
-            setattr(task, 'message_id', None)
+      try:
+        # 如果已经是格式化后的字典，直接添加
+        if isinstance(task, dict) and 'id' in task and 'status' in task:
+          formatted_tasks.append(task)
+          continue
+          
+        # 否则使用格式化方法处理
+        formatted_task = self._format_task_for_client(task)
+        formatted_tasks.append(formatted_task)
+      except Exception as e:
+        logger.error(f"格式化任务 {getattr(task, 'id', 'unknown')} 时出错: {e}")
     
-    # WebSocket推送任务更新
+    logger.info(f"最终返回 {len(formatted_tasks)} 个任务")
+    
+    # 返回ListTaskResponse对象
+    return ListTaskResponse(id=request_id, result=formatted_tasks)
+
+  def _format_task_for_client(self, task):
+    """将Task对象格式化为统一的客户端格式"""
     try:
-      # 只推送指定会话的任务状态
-      if conversation_id:
-        # 获取该会话的任务
-        session_tasks = [task for task in memory_tasks if 
-                      hasattr(task, 'sessionId') and task.sessionId == conversation_id]
+      # 处理状态消息
+      status_message = None
+      if hasattr(task.status, 'message') and task.status.message:
+        status_message = {
+          "role": task.status.message.role if hasattr(task.status.message, 'role') else "agent",
+          "parts": [],
+          "metadata": {}
+        }
         
-        # 为每个任务创建推送消息
-        for task in session_tasks:
-          # 创建任务状态消息
-          task_status = {
-            "type": "task_update",
-            "conversation_id": conversation_id,
-            "task": {
-              "id": task.id,
-              "sessionId": task.sessionId,
-              "message_id": task.message_id if hasattr(task, 'message_id') else None,
-              "status": {
-                "state": task.status.state.value if hasattr(task.status.state, 'value') else str(task.status.state),
-                "message": task.status.message.parts[0].text if task.status.message and hasattr(task.status.message, 'parts') and len(task.status.message.parts) > 0 else "",
-                "timestamp": task.status.timestamp.isoformat() if hasattr(task.status, 'timestamp') else ""
-              }
+        # 添加消息部分
+        if hasattr(task.status.message, 'parts') and task.status.message.parts:
+          for part in task.status.message.parts:
+            part_data = {
+              "type": part.type if hasattr(part, 'type') else "text",
+              "metadata": None
             }
+            
+            if hasattr(part, 'text'):
+              part_data["text"] = part.text
+            
+            status_message["parts"].append(part_data)
+        
+        # 添加元数据
+        if hasattr(task.status.message, 'metadata') and task.status.message.metadata:
+          status_message["metadata"] = task.status.message.metadata
+        else:
+          # 确保至少包含以下字段
+          status_message["metadata"] = {
+            "conversation_id": task.sessionId,
+            "message_id": str(uuid.uuid4()),
+            "wallet_address": self._get_wallet_address_from_task(task)
           }
           
-          # 添加历史记录
-          if hasattr(task, 'history') and task.history:
-            task_status["task"]["history"] = [
-              {
-                "role": msg.role,
-                "parts": [
-                  {
-                    "type": part.type,
-                    "text": part.text if hasattr(part, 'text') else None
-                  }
-                  for part in msg.parts
-                  if part.type == 'text'
-                ]
-              }
-              for msg in task.history
-            ]
+          # 添加last_message_id
+          if hasattr(task, 'history') and task.history and len(task.history) > 0:
+            last_message = task.history[-1]
+            if hasattr(last_message, 'metadata') and last_message.metadata and 'message_id' in last_message.metadata:
+              status_message["metadata"]["last_message_id"] = last_message.metadata['message_id']
+      
+      # 格式化时间戳
+      timestamp = None
+      if hasattr(task.status, 'timestamp'):
+        if isinstance(task.status.timestamp, datetime.datetime):
+          timestamp = task.status.timestamp.isoformat()
+        else:
+          timestamp = str(task.status.timestamp)
+      else:
+        # 如果没有时间戳，使用当前时间
+        timestamp = datetime.datetime.now().isoformat()
+      
+      # 格式化状态
+      status = {
+        "state": task.status.state.value if hasattr(task.status.state, 'value') else str(task.status.state),
+        "message": status_message,
+        "timestamp": timestamp
+      }
+      
+      # 格式化历史记录
+      history = []
+      if hasattr(task, 'history') and task.history:
+        for msg in task.history:
+          msg_data = {
+            "role": msg.role if hasattr(msg, 'role') else "user",
+            "parts": [],
+            "metadata": {}
+          }
           
-          # 添加artifacts
-          if hasattr(task, 'artifacts') and task.artifacts:
-            task_status["task"]["artifacts"] = [
-              {
-                "name": artifact.name,
-                "parts": [
-                  {
-                    "type": part.type,
-                    "text": part.text if hasattr(part, 'text') else None
-                  }
-                  for part in artifact.parts
-                  if part.type == 'text'
-                ]
+          # 添加消息部分
+          if hasattr(msg, 'parts') and msg.parts:
+            for part in msg.parts:
+              part_data = {
+                "type": part.type if hasattr(part, 'type') else "text",
+                "metadata": None
               }
-              for artifact in task.artifacts
-            ]
+              
+              if hasattr(part, 'text'):
+                part_data["text"] = part.text
+              
+              msg_data["parts"].append(part_data)
           
-          # 发送WebSocket消息
-          asyncio.create_task(self.ws_manager.send_message(wallet_address, task_status))
+          # 添加元数据
+          if hasattr(msg, 'metadata') and msg.metadata:
+            msg_data["metadata"] = msg.metadata
+          
+          history.append(msg_data)
+      
+      # 格式化制品
+      artifacts = []
+      if hasattr(task, 'artifacts') and task.artifacts:
+        for artifact in task.artifacts:
+          artifact_data = {
+            "name": artifact.name if hasattr(artifact, 'name') else "",
+            "description": artifact.description if hasattr(artifact, 'description') else None,
+            "parts": [],
+            "metadata": artifact.metadata if hasattr(artifact, 'metadata') else None,
+            "index": artifact.index if hasattr(artifact, 'index') else 0,
+            "append": artifact.append if hasattr(artifact, 'append') else None,
+            "lastChunk": artifact.lastChunk if hasattr(artifact, 'lastChunk') else True
+          }
+          
+          # 添加制品部分
+          if hasattr(artifact, 'parts') and artifact.parts:
+            for part in artifact.parts:
+              part_data = {
+                "type": part.type if hasattr(part, 'type') else "text",
+                "metadata": None
+              }
+              
+              if hasattr(part, 'text'):
+                part_data["text"] = part.text
+              
+              artifact_data["parts"].append(part_data)
+          
+          artifacts.append(artifact_data)
+      
+      # 创建标准格式的任务对象
+      return {
+        "id": task.id,
+        "sessionId": task.sessionId if hasattr(task, 'sessionId') else None,
+        "status": status,
+        "artifacts": artifacts,
+        "history": history,
+        "metadata": task.metadata if hasattr(task, 'metadata') else None
+      }
     except Exception as e:
-      logger.error(f"通过WebSocket推送任务更新时出错: {e}")
+      logger.error(f"格式化任务时出错: {e}")
+      # 返回基本信息，确保不会中断流程
+      return {
+        "id": task.id if hasattr(task, 'id') else str(uuid.uuid4()),
+        "sessionId": task.sessionId if hasattr(task, 'sessionId') else None,
+        "status": {
+          "state": str(task.status.state) if hasattr(task, 'status') and hasattr(task.status, 'state') else "completed",
+          "message": None,
+          "timestamp": datetime.datetime.now().isoformat()
+        },
+        "artifacts": [],
+        "history": [],
+        "metadata": None
+      }
+      
+  def _get_wallet_address_from_task(self, task):
+    """从任务中获取钱包地址"""
+    # 从历史消息中获取
+    if hasattr(task, 'history') and task.history:
+      for msg in task.history:
+        if hasattr(msg, 'metadata') and msg.metadata and 'wallet_address' in msg.metadata:
+          return msg.metadata['wallet_address']
     
-    # 返回合并后的任务列表
-    return ListTaskResponse(result=memory_tasks)
+    # 从状态消息中获取
+    if (hasattr(task, 'status') and hasattr(task.status, 'message') and 
+        hasattr(task.status.message, 'metadata') and task.status.message.metadata and 
+        'wallet_address' in task.status.message.metadata):
+      return task.status.message.metadata['wallet_address']
+    
+    return "unknown"
 
   # 注释掉代理注册方法 - 暂不支持该功能
   # async def _register_agent(self, request: Request):
@@ -1253,3 +1513,52 @@ class ConversationServer:
     finally:
       # 断开连接
       await self.ws_manager.disconnect(websocket, wallet_address)
+
+  def notify_task_status_update(self, task) -> None:
+    """通知任务状态更新"""
+    try:
+      if hasattr(task, 'sessionId') and task.sessionId:
+        # 获取会话ID
+        conversation_id = task.sessionId
+        
+        # 获取钱包地址
+        wallet_address = None
+        
+        # 从任务历史中获取钱包地址
+        if hasattr(task, 'history') and task.history:
+          for msg in task.history:
+            if (hasattr(msg, 'metadata') and msg.metadata and 
+                'wallet_address' in msg.metadata):
+              wallet_address = msg.metadata['wallet_address']
+              break
+        
+        # 如果没有从历史中找到，尝试从状态消息中获取
+        if not wallet_address and hasattr(task, 'status') and hasattr(task.status, 'message'):
+          if (hasattr(task.status.message, 'metadata') and 
+              task.status.message.metadata and 
+              'wallet_address' in task.status.message.metadata):
+            wallet_address = task.status.message.metadata['wallet_address']
+        
+        if wallet_address:
+          # 创建标准格式的任务对象
+          formatted_task = self._format_task_for_client(task)
+          
+          # 创建WebSocket消息，使用与接口一致的格式
+          task_response = ListTaskResponse(
+            id=str(uuid.uuid4()),
+            result=[formatted_task]
+          )
+          
+          ws_message = {
+            "type": "task_update",
+            "conversation_id": conversation_id,
+            "jsonrpc": task_response.jsonrpc,
+            "id": task_response.id,
+            "result": task_response.result,
+            "error": task_response.error
+          }
+          
+          # 发送WebSocket消息
+          asyncio.create_task(self.ws_manager.send_message(wallet_address, ws_message))
+    except Exception as e:
+      print(f"通知任务状态更新时出错: {e}")
