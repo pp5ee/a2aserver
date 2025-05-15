@@ -858,14 +858,62 @@ class ConversationServer:
       conversations = []
       
       for conv_data in db_conversations:
+        conversation_id = conv_data['conversation_id']
+        
+        # 获取会话消息数量
+        messages_count = 0
+        try:
+          # 获取会话消息列表
+          conversation_messages = user_session_manager.get_conversation_messages(
+            conversation_id=conversation_id,
+            wallet_address=wallet_address
+          )
+          messages_count = len(conversation_messages) if conversation_messages else 0
+          
+          # 获取会话的所有消息内容(用于前端显示)
+          messages = []
+          for msg in conversation_messages:
+            message_data = {
+              "id": msg.get('message_id', ''),
+              "role": msg.get('role', 'unknown'),
+              "content": []
+            }
+            
+            # 提取消息内容
+            content = msg.get('content', {})
+            if 'parts' in content and isinstance(content['parts'], list):
+              for part in content['parts']:
+                if part.get('type') == 'text':
+                  message_data["content"].append({
+                    "type": "text",
+                    "text": part.get('text', '')
+                  })
+            
+            messages.append(message_data)
+        except Exception as e:
+          logger.error(f"获取会话 {conversation_id} 的消息时出错: {e}")
+        
         conversation = Conversation(
-          conversation_id=conv_data['conversation_id'],
+          conversation_id=conversation_id,
           name=conv_data.get('name', ''),
-          is_active=conv_data.get('is_active', True)
+          is_active=conv_data.get('is_active', True),
+          messages=messages,  # 添加消息列表
+          message_count=messages_count  # 添加消息计数
         )
         conversations.append(conversation)
       
-      return ListConversationResponse(result=conversations)
+      # 获取请求ID
+      request_data = await request.json()
+      request_id = request_data.get('id', str(uuid.uuid4()))
+      
+      # 返回JSONRPC 2.0格式的响应
+      return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": conversations,
+        "error": None
+      }
+      
     except Exception as err:
       logger.error(f"从数据库获取对话历史时出错: {err}")
       # 出错时回退到使用管理器方法
