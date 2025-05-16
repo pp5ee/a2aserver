@@ -1547,15 +1547,11 @@ class UserSessionManager:
                     agent_url = sub.get('agent_url')
                     expire_at = sub.get('expire_at')
                     
-                   
-                    
                     if not all([nft_mint_id, agent_url, expire_at]):
-                       
                         continue
                     
                     # 确保expire_at是datetime对象
                     if not isinstance(expire_at, datetime.datetime):
-                       
                         # 尝试转换
                         try:
                             if isinstance(expire_at, (int, float)):
@@ -1575,13 +1571,12 @@ class UserSessionManager:
                     existing = cursor.fetchone()
                     
                     if existing:
-                        # 更新现有记录，暂时保留is_online状态为unknown，后续立即检查
-                        
+                        # 更新现有记录，默认设置为离线，后续检查在线状态
                         try:
                             cursor.execute(
                                 """
                                 UPDATE user_agents 
-                                SET agent_url = %s, expire_at = %s 
+                                SET agent_url = %s, expire_at = %s, is_online = 'no'
                                 WHERE wallet_address = %s AND nft_mint_id = %s
                                 """,
                                 (agent_url, expire_at, wallet_address, nft_mint_id)
@@ -1596,7 +1591,7 @@ class UserSessionManager:
                                 cursor.execute(
                                     """
                                     UPDATE user_agents 
-                                    SET agent_url = %s, expire_at = %s 
+                                    SET agent_url = %s, expire_at = %s, is_online = 'no'
                                     WHERE wallet_address = %s AND nft_mint_id = %s
                                     """,
                                     (agent_url, expire_at_str, wallet_address, nft_mint_id)
@@ -1608,14 +1603,14 @@ class UserSessionManager:
                                 logger.error(f"使用字符串格式更新也失败: {retry_err}")
                                 continue
                     else:
-                        # 插入新记录，暂时设置is_online为unknown，但后续立即检查
+                        # 插入新记录，默认设置为离线，后续检查在线状态
                         logger.info(f"插入新NFT订阅: mint={nft_mint_id}, url={agent_url}")
                         try:
                             cursor.execute(
                                 """
                                 INSERT INTO user_agents 
                                 (wallet_address, agent_url, nft_mint_id, expire_at, is_online) 
-                                VALUES (%s, %s, %s, %s, 'unknown')
+                                VALUES (%s, %s, %s, %s, 'no')
                                 """,
                                 (wallet_address, agent_url, nft_mint_id, expire_at)
                             )
@@ -1635,7 +1630,7 @@ class UserSessionManager:
                                     """
                                     INSERT INTO user_agents 
                                     (wallet_address, agent_url, nft_mint_id, expire_at, is_online) 
-                                    VALUES (%s, %s, %s, %s, 'unknown')
+                                    VALUES (%s, %s, %s, %s, 'no')
                                     """,
                                     (wallet_address, agent_url, nft_mint_id, expire_at_str)
                                 )
@@ -1679,17 +1674,25 @@ class UserSessionManager:
                 for agent_id, agent_url in agents_to_check:
                     try:
                         # 直接调用状态检查器的方法检查代理状态
-                        is_online, agent_card = status_checker._check_agent_status(agent_url)
-                        logger.info(f"代理 {agent_url} 初始检查结果: {is_online}")
+                        is_online, agent_card = status_checker._try_check_agent(agent_url)
+                        logger.info(f"代理 {agent_url} 在线状态检查结果: {is_online}")
                         
                         # 收集更新信息
                         if agent_card:
                             agent_card_json = json.dumps(agent_card)
                             status_updates.append((is_online, agent_card_json, agent_id))
+                            logger.info(f"代理 {agent_url} 成功获取agent card并保存")
                         else:
                             status_updates.append((is_online, None, agent_id))
+                            if is_online == 'no':
+                                logger.info(f"代理 {agent_url} 不在线，标记为离线状态")
+                            else:
+                                logger.info(f"代理 {agent_url} 在线但未获取到有效agent card")
                     except Exception as e:
                         logger.error(f"初始检查代理 {agent_url} 状态时出错: {e}")
+                        # 出错时标记为离线
+                        status_updates.append(('no', None, agent_id))
+                        logger.info(f"代理 {agent_url} 检查出错，标记为离线状态")
                         continue
                 
                 # 批量更新代理状态
@@ -1705,6 +1708,7 @@ class UserSessionManager:
                                 "UPDATE user_agents SET is_online = %s, agent_card = %s WHERE id = %s",
                                 with_cards
                             )
+                            logger.info(f"更新了 {len(with_cards)} 个带agent card的代理状态")
                         
                         # 更新不带卡片数据的代理
                         if without_cards:
@@ -1712,6 +1716,7 @@ class UserSessionManager:
                                 "UPDATE user_agents SET is_online = %s WHERE id = %s",
                                 without_cards
                             )
+                            logger.info(f"更新了 {len(without_cards)} 个不带agent card的代理状态")
                         
                         # 提交更新
                         self._db_connection.commit()
@@ -1724,25 +1729,10 @@ class UserSessionManager:
                             pass
             
             cursor.close()
-            
-        except Exception as err:
-            logger.error(f"更新用户订阅信息时出错: {err}")
-            import traceback
-            logger.error(f"错误详情: {traceback.format_exc()}")
-            
-            # 尝试回滚事务
-            try:
-                if self._db_connection:
-                    self._db_connection.rollback()
-            except Exception:
-                pass
-                
-            # 尝试重新连接数据库
-            try:
-                self._initialize_database()
-            except Exception as db_err:
-                logger.error(f"重新连接数据库失败: {db_err}")
-                
+        except Exception as e:
+            logger.error(f"更新用户代理订阅信息时出错: {e}")
+            if cursor:
+                cursor.close()
 
     def _remove_expired_agents(self, wallet_address: str):
         """移除过期的代理"""
@@ -2041,8 +2031,8 @@ class UserSubscriptionChecker:
         self.timer_thread = None
         self.stop_flag = False
         self.lock = threading.Lock()  # 线程锁，确保线程安全
-        self.scan_interval = 180  # 扫描间隔，单位秒，默认3分钟
-        self.activity_threshold = 30  # 活跃用户阈值，单位分钟
+        self.scan_interval = 60  # 扫描间隔，单位秒，默认3分钟
+        self.activity_threshold = 20  # 活跃用户阈值，单位分钟
         
     def start_checker(self):
         """启动集中式订阅检查任务"""
@@ -2107,7 +2097,7 @@ class UserSubscriptionChecker:
             current_time = time.time()
             if current_time < next_check_time:
                 # 如果还没到下一次检查时间，等待适当的时间
-                sleep_time = min(next_check_time - current_time, 5)  # 最多等待5秒，以便及时响应停止请求
+                sleep_time = min(next_check_time - current_time, 2)  # 最多等待5秒，以便及时响应停止请求
                 time.sleep(sleep_time)
                 continue
                 
@@ -2382,7 +2372,7 @@ class AgentStatusChecker:
         self.timer_thread = None
         self.stop_flag = False
         self.lock = threading.Lock()
-        self.interval = 300  # 增加到300秒检查一次，减少检查频率
+        self.interval = 30  # 增加到300秒检查一次，减少检查频率
         self.max_retries = 1  # 检查失败时最大重试次数
         self.retry_delay = 2  # 重试间隔(秒)
         self.last_check_time = {}  # 记录每个代理最后一次检查时间
@@ -2451,7 +2441,7 @@ class AgentStatusChecker:
             current_time = time.time()
             if current_time < next_check_time:
                 # 如果还没到下一次检查时间，等待适当的时间
-                sleep_time = min(next_check_time - current_time, 5)  # 最多等待5秒，以便及时响应停止请求
+                sleep_time = min(next_check_time - current_time, 2)  # 最多等待5秒，以便及时响应停止请求
                 time.sleep(sleep_time)
                 continue
                 
