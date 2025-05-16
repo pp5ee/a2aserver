@@ -1,4 +1,4 @@
-import { Connection, PublicKey, Keypair, SystemProgram, LAMPORTS_PER_SOL, Transaction, VersionedTransaction } from '@solana/web3.js';
+import { Connection, PublicKey, Keypair, SystemProgram, LAMPORTS_PER_SOL, Transaction, VersionedTransaction, SYSVAR_CLOCK_PUBKEY } from '@solana/web3.js';
 import { Program, AnchorProvider, Wallet, BN } from '@coral-xyz/anchor';
 import { TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { getWalletAddress } from './solana-wallet';
@@ -193,10 +193,10 @@ export async function mintAgentNFT(metadataUrl: string) {
           agentNft: agentNftPDA,
           tokenAccount: tokenAccount,
           tokenProgram: TOKEN_PROGRAM_ID,
-          associatedTokenProgram: SPL_ASSOCIATED_TOKEN_ACCOUNT_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
           systemProgram: SystemProgram.programId,
           rent: new PublicKey('SysvarRent111111111111111111111111111111111'),
-          clock: new PublicKey('SysvarC1ock11111111111111111111111111111111'),
+          clock: SYSVAR_CLOCK_PUBKEY,
         })
         .signers([nftMintKeypair])
         .rpc();
@@ -293,9 +293,7 @@ export async function purchaseSubscription(agentNftMint: string, subscriptionTyp
       [Buffer.from("agent-nft"), mintPublicKey.toBuffer()],
       program.programId
     );
-    
-    // 使用钱包作为支付目标地址
-    const paymentDestination = wallet;
+    console.log(`Agent NFT PDA: ${agentNftPDA.toString()}`);
     
     // 查找订阅PDA
     const [subscriptionPDA] = PublicKey.findProgramAddressSync(
@@ -306,6 +304,26 @@ export async function purchaseSubscription(agentNftMint: string, subscriptionTyp
       ],
       program.programId
     );
+    console.log(`Subscription PDA: ${subscriptionPDA.toString()}`);
+    
+    // 查找feeCollector PDA
+    const [feeCollectorPDA] = PublicKey.findProgramAddressSync(
+      [Buffer.from("fee_account")],
+      program.programId
+    );
+    console.log(`Fee Collector PDA: ${feeCollectorPDA.toString()}`);
+    
+    // 获取Agent NFT账户以确定支付目标地址
+    let paymentDestination;
+    try {
+      const agentNftAccount = await program.account.agentNft.fetch(agentNftPDA);
+      paymentDestination = (agentNftAccount as any).owner;
+      console.log(`Payment Destination (NFT Owner): ${paymentDestination.toString()}`);
+    } catch (error) {
+      console.error('获取Agent NFT账户失败，使用当前钱包作为支付目标:', error);
+      paymentDestination = wallet;
+      console.log(`Payment Destination (Fallback): ${paymentDestination.toString()}`);
+    }
     
     // 转换订阅类型为合约枚举格式
     let subscriptionTypeArg;
@@ -331,6 +349,8 @@ export async function purchaseSubscription(agentNftMint: string, subscriptionTyp
       agentNftMint: mintPublicKey.toString(),
       agentNftPDA: agentNftPDA.toString(),
       subscriptionPDA: subscriptionPDA.toString(),
+      feeCollectorPDA: feeCollectorPDA.toString(),
+      paymentDestination: paymentDestination.toString(),
       subscriptionType
     });
     
@@ -344,36 +364,53 @@ export async function purchaseSubscription(agentNftMint: string, subscriptionTyp
           agentNftMint: mintPublicKey,
           subscription: subscriptionPDA,
           paymentDestination: paymentDestination,
+          feeCollector: feeCollectorPDA,
           systemProgram: SystemProgram.programId,
-          clock: new PublicKey('SysvarC1ock11111111111111111111111111111111'),
+          clock: SYSVAR_CLOCK_PUBKEY,
         })
         .rpc();
       
       console.log('订阅交易成功:', tx);
       
-      // 创建模拟的返回数据
-      const expiryDate = new Date();
-      switch(subscriptionType) {
-        case 'oneDay':
-          expiryDate.setDate(expiryDate.getDate() + 1);
-          break;
-        case 'sevenDays':
-          expiryDate.setDate(expiryDate.getDate() + 7);
-          break;
-        case 'thirtyDays':
-          expiryDate.setDate(expiryDate.getDate() + 30);
-          break;
-        case 'yearly':
-          expiryDate.setFullYear(expiryDate.getFullYear() + 1);
-          break;
+      // 查询订阅账户以获取准确的过期时间
+      try {
+        const subscriptionAccount = await program.account.subscription.fetch(subscriptionPDA);
+        const expiryTimestamp = (subscriptionAccount as any).expiresAt.toNumber() * 1000; // 转换为毫秒
+        const expiryDate = new Date(expiryTimestamp);
+        
+        return {
+          success: true,
+          subscriptionPDA: subscriptionPDA.toString(),
+          transactionSignature: tx,
+          expiresAt: expiryDate.toLocaleString()
+        };
+      } catch (fetchError) {
+        console.warn('获取订阅过期时间失败，使用估计时间:', fetchError);
+        
+        // 如果无法获取，则创建估计的过期时间
+        const expiryDate = new Date();
+        switch(subscriptionType) {
+          case 'oneDay':
+            expiryDate.setDate(expiryDate.getDate() + 1);
+            break;
+          case 'sevenDays':
+            expiryDate.setDate(expiryDate.getDate() + 7);
+            break;
+          case 'thirtyDays':
+            expiryDate.setDate(expiryDate.getDate() + 30);
+            break;
+          case 'yearly':
+            expiryDate.setFullYear(expiryDate.getFullYear() + 1);
+            break;
+        }
+        
+        return {
+          success: true,
+          subscriptionPDA: subscriptionPDA.toString(),
+          transactionSignature: tx,
+          expiresAt: expiryDate.toLocaleString()
+        };
       }
-      
-      return {
-        success: true,
-        subscriptionPDA: subscriptionPDA.toString(),
-        transactionSignature: tx,
-        expiresAt: expiryDate.toLocaleString()
-      };
     } catch (txError) {
       console.error('订阅交易执行失败:', txError);
       

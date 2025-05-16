@@ -716,12 +716,17 @@ button:disabled {
   background-color: #f8fafc;
   border-radius: 8px;
   overflow: hidden;
-  transition: all 0.3s;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+  transform: translateZ(0);
+  transition: box-shadow 0.25s ease, transform 0.25s ease;
+  will-change: transform, box-shadow;
+  position: relative;
 }
 
 .nft-card:hover, .sub-card:hover {
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.1);
-  transform: translateY(-2px);
+  transform: translateY(-2px) translateZ(0);
+  backface-visibility: hidden;
 }
 
 .nft-header, .sub-header {

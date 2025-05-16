@@ -3,6 +3,7 @@
 set up your environment variables in the .env file with your private key and program ID. The private key should be an array format as exported by Solana CLI or wallets.
 ``` bash
 WALLET_PRIVATE_KEY=your_private_key_here
+PROGRAM_AUTHORITY_PRIVATE_KEY=program_authority_private_key_here
 PROGRAM_ID=smart_contract_program_id_here
 ```
 # mv idl file to current dir
@@ -13,18 +14,25 @@ PROGRAM_ID=smart_contract_program_id_here
 
 # How to use
 ``` bash
-# Mint a new Agent NFT
-node index.js mint "https://example.com/my-agent-metadata.json"
+# Initialize fee collector PDA,call once after contract deploy
+node index.js init-fee-collector
 
-# Purchase a  subscription
-node index.js purchase YOUR_AGENT_NFT_MINT_ADDRESS oneDay/sevenDays/thirtyDays/yearly
+# Mint a new Agent NFT
+node index.js mint [metadata_url]
+
+# Purchase a subscription
+node index.js purchase <agent_mint> [subscription_type]
+# subscription_type can be: oneDay, sevenDays, thirtyDays, yearly
+
+# Withdraw accumulated fees
+node index.js withdraw-fees [destination]
 
 # List all Agent NFTs
 node index.js list-agents
 
-# List all your subscriptions
-node index.js my-subscriptions
+# List all subscriptions for a wallet
+node index.js my-subscriptions [wallet_address]
 
-# Get subscription for a specific agent
-node index.js get-subscription YOUR_AGENT_NFT_MINT_ADDRESS
+# Get specific subscription info
+node index.js get-subscription <agent_mint> [wallet_address]
 ```

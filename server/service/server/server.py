@@ -558,7 +558,7 @@ class ConversationServer:
                 msg_id = status_msg['metadata']['message_id']
                 if msg_id:
                   tasks_by_message_id[msg_id] = task_data
-                  logger.info(f"将任务 {task_data.get('id', 'unknown')} 关联到消息 {msg_id}")
+                  #logger.info(f"将任务 {task_data.get('id', 'unknown')} 关联到消息 {msg_id}")
                   
             # 将任务关联到历史消息
             if 'history' in task_obj and task_obj['history']:
@@ -567,9 +567,9 @@ class ConversationServer:
                   msg_id = history_msg['metadata']['message_id']
                   if msg_id:
                     tasks_by_message_id[msg_id] = task_data
-                    logger.info(f"将任务 {task_data.get('id', 'unknown')} 关联到历史消息 {msg_id}")
+                    #logger.info(f"将任务 {task_data.get('id', 'unknown')} 关联到历史消息 {msg_id}")
         
-        logger.info(f"任务映射表: {list(tasks_by_message_id.keys())}")
+        #logger.info(f"任务映射表: {list(tasks_by_message_id.keys())}")
       except Exception as e:
         logger.error(f"获取任务信息时出错: {e}")
         import traceback
@@ -1021,7 +1021,7 @@ class ConversationServer:
               formatted_task = self._prepare_task_for_message(db_task)
               
               if formatted_task:
-                logger.info(f"成功转换数据库任务 {task_id}")
+                #logger.info(f"成功转换数据库任务 {task_id}")
                 
                 # 将格式化后的任务添加到响应列表，避免Task类的限制
                 memory_tasks.append({

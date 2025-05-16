@@ -133,8 +133,8 @@ class UserSessionManager:
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 wallet_address VARCHAR(255) PRIMARY KEY,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT UTC_TIMESTAMP(),
+                last_active TIMESTAMP DEFAULT UTC_TIMESTAMP() ON UPDATE UTC_TIMESTAMP()
             )
             ''')
             
@@ -335,7 +335,7 @@ class UserSessionManager:
                 self._db_connection.commit()
             else:
                 # 更新最后活跃时间
-                cursor.execute("UPDATE users SET last_active = CURRENT_TIMESTAMP WHERE wallet_address = %s", (wallet_address,))
+                cursor.execute("UPDATE users SET last_active = UTC_TIMESTAMP() WHERE wallet_address = %s", (wallet_address,))
                 self._db_connection.commit()
                 
             cursor.close()
@@ -353,7 +353,7 @@ class UserSessionManager:
                     cursor.execute("INSERT INTO users (wallet_address) VALUES (%s)", (wallet_address,))
                     self._db_connection.commit()
                 else:
-                    cursor.execute("UPDATE users SET last_active = CURRENT_TIMESTAMP WHERE wallet_address = %s", (wallet_address,))
+                    cursor.execute("UPDATE users SET last_active = UTC_TIMESTAMP() WHERE wallet_address = %s", (wallet_address,))
                     self._db_connection.commit()
                     
                 cursor.close()
@@ -447,7 +447,7 @@ class UserSessionManager:
         
         if self._memory_mode:
             # 内存模式下清理
-            current_time = datetime.datetime.now()
+            current_time = datetime.datetime.utcnow()
             inactive_timeout = current_time - timedelta(minutes=timeout_minutes)
             
             # 查找过期用户
@@ -471,10 +471,13 @@ class UserSessionManager:
             self._db_connection.ping(reconnect=True)
             cursor = self._db_connection.cursor()
             
-            # 查询超时的用户
+            # 查询超时的用户 - 使用UTC时间
+            utc_inactive_time = datetime.datetime.utcnow() - timedelta(minutes=timeout_minutes)
+            logger.info(f"清理活跃时间早于UTC: {utc_inactive_time}的用户")
+            
             cursor.execute(
                 "SELECT wallet_address FROM users WHERE last_active < %s", 
-                (datetime.datetime.now() - timedelta(minutes=timeout_minutes),)
+                (utc_inactive_time,)
             )
             
             for (wallet_address,) in cursor.fetchall():
@@ -1448,17 +1451,19 @@ class UserSessionManager:
         
         # 更新用户活跃时间
         if self._memory_mode:
-            self._memory_users[wallet_address] = datetime.datetime.now()
+            self._memory_users[wallet_address] = datetime.datetime.utcnow()
+            logger.debug(f"内存模式下更新用户活跃时间(UTC): {wallet_address[:8] if len(wallet_address) > 8 else wallet_address}")
         elif self._db_connection:
             try:
                 self._db_connection.ping(reconnect=True)
                 cursor = self._db_connection.cursor()
                 cursor.execute(
-                    "UPDATE users SET last_active = CURRENT_TIMESTAMP WHERE wallet_address = %s",
+                    "UPDATE users SET last_active = UTC_TIMESTAMP() WHERE wallet_address = %s",
                     (wallet_address,)
                 )
                 self._db_connection.commit()
                 cursor.close()
+                logger.debug(f"数据库模式下更新用户活跃时间(UTC): {wallet_address[:8] if len(wallet_address) > 8 else wallet_address}")
             except Exception as err:
                 logger.error(f"更新用户活跃状态时出错: {err}")
         
@@ -2117,8 +2122,9 @@ class UserSubscriptionChecker:
                 execution_time = time.time() - start_time
                 next_check_time = start_time + self.scan_interval
                 
-                # 记录执行时间，用于监控
-                logger.info(f"集中式订阅检查完成，耗时: {execution_time:.2f}秒，下次检查时间: {datetime.datetime.fromtimestamp(next_check_time)}")
+                # 记录执行时间，用于监控 - 使用UTC时间保持与数据库一致
+                next_check_utc = datetime.datetime.utcfromtimestamp(next_check_time)
+                logger.info(f"集中式订阅检查完成，耗时: {execution_time:.2f}秒，下次检查UTC时间: {next_check_utc}")
                 
             except Exception as e:
                 logger.error(f"执行集中式订阅检查任务时出错: {e}")
@@ -2146,7 +2152,11 @@ class UserSubscriptionChecker:
             cursor = self.user_session_manager._db_connection.cursor()
             
             # 查询活跃用户 - 最近30分钟内活跃的用户
-            active_time_threshold = datetime.datetime.now() - datetime.timedelta(minutes=self.activity_threshold)
+            # 使用UTC时间与数据库中的时间进行比较
+            active_time_threshold = datetime.datetime.utcnow() - datetime.timedelta(minutes=self.activity_threshold)
+            
+            logger.info(f"查询活跃用户，UTC时间阈值: {active_time_threshold}")
+            
             cursor.execute(
                 "SELECT wallet_address FROM users WHERE last_active > %s",
                 (active_time_threshold,)
