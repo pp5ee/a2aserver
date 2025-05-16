@@ -33,6 +33,7 @@ class A2AClient:
         self.headers = headers or {}
 
     async def send_task(self, payload: dict[str, Any]) -> SendTaskResponse:
+        print(f"[日志] 发送任务，headers: {self.agent_client.headers}")
         request = SendTaskRequest(params=payload)
         return SendTaskResponse(**await self._send_request(request))
 
@@ -40,6 +41,7 @@ class A2AClient:
         self, payload: dict[str, Any]
     ) -> AsyncIterable[SendTaskStreamingResponse]:
         request = SendTaskStreamingRequest(params=payload)
+        print(f"[日志] 流式任务请求: URL={self.url}, Headers={self.headers}")
         with httpx.Client(timeout=None) as client:
             with connect_sse(
                 client, "POST", self.url, json=request.model_dump(), headers=self.headers

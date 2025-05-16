@@ -1007,7 +1007,7 @@ class ConversationServer:
           from datetime import datetime
           
           # 获取内存中任务的ID列表
-          memory_task_ids = [t['id'] for t in memory_tasks]
+          memory_task_ids = [t.id for t in memory_tasks]
           logger.info(f"内存中已有的任务ID: {memory_task_ids}")
           
           # 直接使用我们自己的格式化方法处理数据库任务
