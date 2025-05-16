@@ -8,6 +8,8 @@ import time
 import json
 import uuid
 import sys
+import concurrent.futures
+import asyncio
 
 # 尝试导入MySQL连接器，如果不可用则使用内存模式
 try:
@@ -51,6 +53,8 @@ class UserSessionManager:
         self.expired_agent_cleaner = ExpiredAgentCleaner(self)
         # 创建代理状态检查器
         self.agent_status_checker = AgentStatusChecker(self)
+        # 启动集中式订阅检查器
+        self.subscription_checker.start_checker()
         # 启动过期代理清理任务
         self.expired_agent_cleaner.start_cleaner()
         # 启动代理状态检查任务
@@ -2029,129 +2033,202 @@ class UserSubscriptionChecker:
     
     def __init__(self, user_session_manager):
         self.user_session_manager = user_session_manager
-        self.user_timers = {}  # 存储用户定时任务 {wallet_address: timer_thread}
-        self.user_last_active = {}  # 存储用户最后活跃时间 {wallet_address: datetime}
-        self.stop_flags = {}  # 存储停止标志 {wallet_address: bool}
+        self.timer_thread = None
+        self.stop_flag = False
         self.lock = threading.Lock()  # 线程锁，确保线程安全
+        self.scan_interval = 180  # 扫描间隔，单位秒，默认3分钟
+        self.activity_threshold = 30  # 活跃用户阈值，单位分钟
         
-    def start_subscription_checker(self, wallet_address: str):
-        """为用户启动订阅检查定时任务"""
+    def start_checker(self):
+        """启动集中式订阅检查任务"""
         with self.lock:
-            # 如果用户已有定时任务在运行，则不需要再次启动
-            if wallet_address in self.user_timers and self.user_timers[wallet_address].is_alive():
-                # 只更新最后活跃时间
-                self.user_last_active[wallet_address] = datetime.datetime.now()
+            if self.timer_thread and self.timer_thread.is_alive():
+                logger.debug("集中式订阅检查任务已在运行")
                 return
                 
             # 设置停止标志为False
-            self.stop_flags[wallet_address] = False
-            # 记录用户最后活跃时间
-            self.user_last_active[wallet_address] = datetime.datetime.now()
+            self.stop_flag = False
             
             # 创建并启动定时任务线程
-            timer_thread = threading.Thread(
-                target=self._subscription_checker_task,
-                args=(wallet_address,),
-                daemon=True  # 设置为守护线程，主程序退出时自动结束
+            self.timer_thread = threading.Thread(
+                target=self._checker_task,
+                daemon=True,  # 设置为守护线程，主程序退出时自动结束
+                name="SubscriptionChecker"  # 添加线程名称便于调试
             )
-            self.user_timers[wallet_address] = timer_thread
-            timer_thread.start()
+            self.timer_thread.start()
             
-            logger.debug(f"为用户 {wallet_address} 启动NFT订阅检查定时任务")
+            logger.info(f"已启动集中式订阅检查任务，扫描间隔: {self.scan_interval}秒，活跃用户阈值: {self.activity_threshold}分钟")
+    
+    def stop_checker(self):
+        """停止检查任务"""
+        with self.lock:
+            if not self.timer_thread or not self.timer_thread.is_alive():
+                logger.debug("集中式订阅检查任务未在运行")
+                return
+                
+            self.stop_flag = True
+            logger.debug("已标记停止集中式订阅检查任务")
+            
+            # 等待线程结束，最多等待10秒
+            self.timer_thread.join(timeout=10)
+            
+            # 确认线程已停止
+            if not self.timer_thread.is_alive():
+                logger.info("集中式订阅检查任务已停止")
+            else:
+                logger.warning("集中式订阅检查任务可能未正常停止")
     
     def update_user_activity(self, wallet_address: str):
-        """更新用户最后活跃时间"""
-        with self.lock:
-            if wallet_address in self.user_last_active:
-                self.user_last_active[wallet_address] = datetime.datetime.now()
-                # 如果定时任务已经停止，则重新启动
-                if wallet_address in self.stop_flags and self.stop_flags[wallet_address]:
-                    self.start_subscription_checker(wallet_address)
+        """更新用户最后活跃时间
+        
+        此方法保留用户活跃度更新功能，但不再触发单独的检查线程
+        """
+        # 由于不再使用单独的线程，此方法现在什么都不做
+        # 用户活跃度更新在UserSessionManager.update_user_activity中完成
+        pass
     
-    def stop_subscription_checker(self, wallet_address: str):
-        """停止用户的订阅检查定时任务"""
-        with self.lock:
-            if wallet_address in self.stop_flags:
-                self.stop_flags[wallet_address] = True
-                logger.debug(f"标记停止用户 {wallet_address} 的NFT订阅检查定时任务")
-    
-    def _subscription_checker_task(self, wallet_address: str):
-        """订阅检查定时任务的执行函数"""
+    def _checker_task(self):
+        """集中式检查任务的执行函数"""
+        next_check_time = time.time()  # 初始化下一次检查时间
+        
         while True:
             # 检查是否需要停止
             with self.lock:
-                if self.stop_flags.get(wallet_address, True):
-                    logger.debug(f"用户 {wallet_address} 的NFT订阅检查定时任务已停止")
+                if self.stop_flag:
+                    logger.debug("集中式订阅检查任务已停止")
                     return
+            
+            # 精确控制执行间隔
+            current_time = time.time()
+            if current_time < next_check_time:
+                # 如果还没到下一次检查时间，等待适当的时间
+                sleep_time = min(next_check_time - current_time, 5)  # 最多等待5秒，以便及时响应停止请求
+                time.sleep(sleep_time)
+                continue
                 
-                # 检查用户是否超过30分钟未活跃
-                last_active = self.user_last_active.get(wallet_address)
-                if last_active:
-                    inactive_duration = datetime.datetime.now() - last_active
-                    if inactive_duration.total_seconds() > 30 * 60:  # 30分钟
-                        logger.debug(f"用户 {wallet_address} 超过30分钟未活跃，停止NFT订阅检查")
-                        self.stop_flags[wallet_address] = True
-                        return
+            # 记录开始时间
+            start_time = time.time()
             
             try:
-                # 使用超时控制来执行NFT订阅状态检查
-                import asyncio
-                # 创建一个异步事件循环来运行异步函数
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+                # 获取活跃用户并检查订阅
+                self._check_active_users()
                 
-                try:
-                    # 添加超时控制，防止检查过程阻塞
-                    async def check_with_timeout():
-                        try:
-                            # 使用30秒超时
-                            await asyncio.wait_for(
-                                self._check_user_subscriptions(wallet_address),
-                                timeout=30.0
-                            )
-                        except asyncio.TimeoutError:
-                            logger.error(f"检查用户 {wallet_address} NFT订阅超时")
-                        except Exception as e:
-                            logger.error(f"检查用户 {wallet_address} NFT订阅时出错: {e}")
-                    
-                    # 运行带超时的检查任务
-                    loop.run_until_complete(check_with_timeout())
-                    
-                finally:
-                    # 确保资源被正确释放
-                    try:
-                        # 取消所有挂起任务
-                        pending = asyncio.all_tasks(loop)
-                        if pending:
-                            loop.run_until_complete(
-                                asyncio.gather(*pending, return_exceptions=True)
-                            )
-                    except Exception as e:
-                        logger.error(f"清理事件循环任务时出错: {e}")
-                    finally:
-                        # 关闭事件循环
-                        loop.close()
+                # 计算下一次检查时间，考虑执行时间
+                execution_time = time.time() - start_time
+                next_check_time = start_time + self.scan_interval
+                
+                # 记录执行时间，用于监控
+                logger.info(f"集中式订阅检查完成，耗时: {execution_time:.2f}秒，下次检查时间: {datetime.datetime.fromtimestamp(next_check_time)}")
                 
             except Exception as e:
-                logger.error(f"检查用户 {wallet_address} 的NFT订阅时出错: {e}")
-            
-            # 等待1分钟
-            # 优化: 分段等待，以便更快响应停止请求
-            for _ in range(6):  # 每10秒检查一次停止标志，共等待60秒
-                time.sleep(10)
-                with self.lock:
-                    if self.stop_flags.get(wallet_address, True):
-                        logger.debug(f"用户 {wallet_address} 的NFT订阅检查定时任务被中途停止")
-                        return
+                logger.error(f"执行集中式订阅检查任务时出错: {e}")
+                import traceback
+                logger.error(f"错误详情: {traceback.format_exc()}")
+                
+                # 出错后等待一段时间再次尝试
+                next_check_time = time.time() + 60  # 出错后1分钟后重试
     
-    async def _check_user_subscriptions(self, wallet_address: str):
-        """检查用户的NFT订阅状态并更新数据库"""
-        logger.debug(f"开始检查用户 {wallet_address} 的NFT订阅状态")
+    def _check_active_users(self):
+        """检查所有活跃用户的订阅状态"""
+        # 只在数据库模式下执行，内存模式不支持此功能
+        if self.user_session_manager._memory_mode:
+            logger.debug("内存模式下不支持集中式订阅检查")
+            return
         
-        # 调用用户会话管理器的方法来检查和更新订阅
-        await self.user_session_manager.update_user_subscriptions(wallet_address)
-        
-        logger.debug(f"完成用户 {wallet_address} 的NFT订阅状态检查")
+        if not self.user_session_manager._db_connection:
+            logger.warning("数据库未连接，无法执行集中式订阅检查")
+            return
+            
+        try:
+            # 确保数据库连接有效
+            self.user_session_manager._ensure_db_connection()
+            
+            cursor = self.user_session_manager._db_connection.cursor()
+            
+            # 查询活跃用户 - 最近30分钟内活跃的用户
+            active_time_threshold = datetime.datetime.now() - datetime.timedelta(minutes=self.activity_threshold)
+            cursor.execute(
+                "SELECT wallet_address FROM users WHERE last_active > %s",
+                (active_time_threshold,)
+            )
+            
+            active_users = cursor.fetchall()
+            cursor.close()
+            
+            if not active_users:
+                logger.info(f"未找到最近{self.activity_threshold}分钟内活跃的用户")
+                return
+                
+            logger.info(f"找到{len(active_users)}个活跃用户，开始检查订阅")
+            
+            # 使用线程池处理用户订阅检查
+            max_workers = min(10, len(active_users))  # 最多10个线程，避免过多并发
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # 提交所有活跃用户的订阅检查任务
+                futures = []
+                for (wallet_address,) in active_users:
+                    future = executor.submit(self._check_user_subscription_wrapper, wallet_address)
+                    futures.append(future)
+                
+                # 等待所有任务完成，但设置总超时时间
+                done, not_done = concurrent.futures.wait(
+                    futures,
+                    timeout=120,  # 总超时时间2分钟
+                    return_when=concurrent.futures.ALL_COMPLETED
+                )
+                
+                # 处理未完成的任务
+                if not_done:
+                    logger.warning(f"{len(not_done)}个用户订阅检查任务未在超时时间内完成")
+                    
+            logger.info(f"完成所有活跃用户的订阅检查，共{len(active_users)}个用户")
+                
+        except Exception as e:
+            logger.error(f"检查活跃用户订阅状态时出错: {e}")
+            import traceback
+            logger.error(f"错误详情: {traceback.format_exc()}")
+    
+    def _check_user_subscription_wrapper(self, wallet_address: str):
+        """包装异步订阅检查函数，使其可以在线程池中运行"""
+        try:
+            # 创建一个事件循环
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            try:
+                # 在事件循环中运行异步订阅检查
+                async def check_with_timeout():
+                    try:
+                        # 30秒超时
+                        await asyncio.wait_for(
+                            self.user_session_manager.update_user_subscriptions(wallet_address),
+                            timeout=30.0
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error(f"检查用户 {wallet_address} NFT订阅超时")
+                    except Exception as e:
+                        logger.error(f"检查用户 {wallet_address} NFT订阅时出错: {e}")
+                
+                # 执行带超时的异步检查
+                loop.run_until_complete(check_with_timeout())
+                
+            finally:
+                # 清理事件循环资源
+                try:
+                    # 取消所有挂起任务
+                    pending = asyncio.all_tasks(loop)
+                    if pending:
+                        loop.run_until_complete(
+                            asyncio.gather(*pending, return_exceptions=True)
+                        )
+                except Exception as e:
+                    logger.error(f"清理事件循环任务时出错: {e}")
+                finally:
+                    # 关闭事件循环
+                    loop.close()
+                    
+        except Exception as e:
+            logger.error(f"检查用户 {wallet_address} 的订阅包装函数出错: {e}")
 
 class ExpiredAgentCleaner:
     """定时清理过期代理的任务管理器"""

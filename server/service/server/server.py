@@ -193,7 +193,7 @@ class ConversationServer:
       logger.warning("使用默认管理器处理请求")
       return self.default_manager
     
-    # 更新用户活跃状态并启动订阅检查
+    # 更新用户活跃状态
     self._update_user_activity(wallet_address)
       
     # 获取用户特定的manager
@@ -207,14 +207,11 @@ class ConversationServer:
     return manager
     
   def _update_user_activity(self, wallet_address: str):
-    """更新用户活跃状态并启动订阅检查"""
+    """更新用户活跃状态"""
     if self.use_multi_user and wallet_address:
       try:
         # 更新用户活跃状态
         self.user_session_manager.update_user_activity(wallet_address)
-        
-        # 启动订阅检查定时任务
-        self.user_session_manager.subscription_checker.start_subscription_checker(wallet_address)
       except Exception as e:
         logger.error(f"更新用户活跃状态时出错: {e}")
 
