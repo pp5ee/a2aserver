@@ -28,7 +28,7 @@ def get_agent_card(remote_agent_address: str) -> AgentCard:
     remote_agent_address = "http://" + remote_agent_address
   
   try:
-    agent_card = requests.get(remote_agent_address, timeout=10)
+    agent_card = requests.get(remote_agent_address, timeout=1)
     agent_card.raise_for_status()  # 确保请求成功
     return AgentCard(**agent_card.json())
   except requests.exceptions.RequestException as e:
