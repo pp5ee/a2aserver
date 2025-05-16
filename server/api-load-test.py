@@ -18,6 +18,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def truncate_text(text, max_length=100):
+    """截断长文本，超过指定长度时添加省略号"""
+    if isinstance(text, (dict, list)):
+        text = json.dumps(text, ensure_ascii=False)
+    text = str(text)
+    if len(text) > max_length:
+        return text[:max_length] + "..."
+    return text
+
 class LoadTester:
     def __init__(self, base_url, ws_url, headers, http_threads, http_ramp_time, ws_connections, ws_ramp_time):
         self.base_url = base_url
@@ -45,13 +54,25 @@ class LoadTester:
     def fetch_conversation_list(self):
         start_time = time.time()
         try:
-            response = requests.post(f"{self.base_url}/conversation/list", headers=self.headers, json={})
+            # 打印请求信息
+            url = f"{self.base_url}/conversation/list"
+            payload = {}
+            logger.info(f"请求: POST {url} - 载荷: {truncate_text(payload)}")
+            
+            response = requests.post(url, headers=self.headers, json=payload)
             
             # 记录状态码统计
             status_code = response.status_code
             if status_code not in self.stats['status_codes']:
                 self.stats['status_codes'][status_code] = 0
             self.stats['status_codes'][status_code] += 1
+            
+            # 打印响应信息
+            try:
+                response_data = response.json()
+                logger.info(f"响应: {status_code} - 内容: {truncate_text(response_data)}")
+            except:
+                logger.info(f"响应: {status_code} - 内容: {truncate_text(response.text)}")
             
             response.raise_for_status()
             elapsed = time.time() - start_time
@@ -80,10 +101,15 @@ class LoadTester:
         """创建一个新的对话"""
         logger.info("创建新对话")
         try:
+            # 打印请求信息
+            url = f"{self.base_url}/conversation/create"
+            payload = {}
+            logger.info(f"请求: POST {url} - 载荷: {truncate_text(payload)}")
+            
             response = requests.post(
-                f"{self.base_url}/conversation/create", 
+                url, 
                 headers=self.headers,
-                json={}
+                json=payload
             )
             
             # 记录状态码统计
@@ -91,6 +117,13 @@ class LoadTester:
             if status_code not in self.stats['status_codes']:
                 self.stats['status_codes'][status_code] = 0
             self.stats['status_codes'][status_code] += 1
+            
+            # 打印响应信息
+            try:
+                response_data = response.json()
+                logger.info(f"响应: {status_code} - 内容: {truncate_text(response_data)}")
+            except:
+                logger.info(f"响应: {status_code} - 内容: {truncate_text(response.text)}")
             
             response.raise_for_status()
             self.stats['success_requests'] += 1
@@ -121,30 +154,47 @@ class LoadTester:
         
         start_time = time.time()
         try:
-            # 任务列表接口不需要传入conversation_id
-            response = requests.post(f"{self.base_url}/task/list", headers=self.headers, json={})
+            # 获取任务列表
+            url = f"{self.base_url}/task/list"
+            payload = {"conversation_id": conversation_id}
+            logger.info(f"请求: POST {url} - 载荷: {truncate_text(payload)}")
+            
+            task_response = requests.post(
+                url, 
+                headers=self.headers, 
+                json=payload
+            )
             
             # 记录状态码统计
-            status_code = response.status_code
+            status_code = task_response.status_code
             if status_code not in self.stats['status_codes']:
                 self.stats['status_codes'][status_code] = 0
             self.stats['status_codes'][status_code] += 1
             
-            response.raise_for_status()
+            # 打印响应信息
+            try:
+                response_data = task_response.json()
+                logger.info(f"响应: {status_code} - 内容: {truncate_text(response_data)}")
+            except:
+                logger.info(f"响应: {status_code} - 内容: {truncate_text(task_response.text)}")
+                response_data = {}
+            
+            task_response.raise_for_status()
             elapsed = time.time() - start_time
             self.stats['task_list_times'].append(elapsed)
             self.stats['success_requests'] += 1
             
             # 处理响应
-            result = response.json().get('result', [])
-            if result:
+            tasks = response_data.get('result', [])
+            if tasks:
                 self.stats['requests_with_data'] += 1
-                
-            logger.debug(f"Found {len(result)} tasks")
+                logger.info(f"获取到 {len(tasks)} 个任务")
+            else:
+                logger.info("没有获取到任务")
         except Exception as e:
             self.stats['errors'] += 1
             self.stats['failed_requests'] += 1
-            logger.error(f"Error fetching task list: {str(e)}")
+            logger.error(f"获取任务列表时出错: {str(e)}")
 
     def fetch_message_list(self, conversation_id):
         if not conversation_id:
@@ -152,34 +202,48 @@ class LoadTester:
         
         start_time = time.time()
         try:
-            # 消息列表接口需要在请求体中提供params参数
-            response = requests.post(
-                f"{self.base_url}/message/list", 
+            # 获取消息列表
+            url = f"{self.base_url}/message/list"
+            payload = {"params": conversation_id}
+            logger.info(f"请求: POST {url} - 载荷: {truncate_text(payload)}")
+            
+            message_response = requests.post(
+                url, 
                 headers=self.headers, 
-                json={"params": conversation_id}
+                json=payload
             )
             
             # 记录状态码统计
-            status_code = response.status_code
+            status_code = message_response.status_code
             if status_code not in self.stats['status_codes']:
                 self.stats['status_codes'][status_code] = 0
             self.stats['status_codes'][status_code] += 1
             
-            response.raise_for_status()
+            # 打印响应信息
+            try:
+                response_data = message_response.json()
+                logger.info(f"响应: {status_code} - 内容: {truncate_text(response_data)}")
+            except:
+                logger.info(f"响应: {status_code} - 内容: {truncate_text(message_response.text)}")
+                response_data = {}
+            
+            message_response.raise_for_status()
             elapsed = time.time() - start_time
             self.stats['message_list_times'].append(elapsed)
             self.stats['success_requests'] += 1
             
             # 处理响应
-            result = response.json().get('result', [])
-            if result:
+            messages = response_data.get('result', [])
+            if messages:
                 self.stats['requests_with_data'] += 1
+                logger.info(f"获取到 {len(messages)} 条消息，对话ID: {conversation_id}")
+            else:
+                logger.info(f"没有获取到消息，对话ID: {conversation_id}")
                 
-            logger.debug(f"Found {len(result)} messages for conversation {conversation_id}")
         except Exception as e:
             self.stats['errors'] += 1
             self.stats['failed_requests'] += 1
-            logger.error(f"Error fetching message list: {str(e)}")
+            logger.error(f"获取消息列表时出错: {str(e)}")
 
     def send_message(self, conversation_id):
         """向对话发送测试消息"""
@@ -205,9 +269,12 @@ class LoadTester:
             }
             
             # 发送消息
+            url = f"{self.base_url}/message/send"
+            logger.info(f"请求: POST {url} - 载荷: {truncate_text(message_data)}")
+            
             start_time = time.time()
             send_response = requests.post(
-                f"{self.base_url}/message/send",
+                url,
                 headers=self.headers,
                 json=message_data
             )
@@ -217,6 +284,13 @@ class LoadTester:
             if status_code not in self.stats['status_codes']:
                 self.stats['status_codes'][status_code] = 0
             self.stats['status_codes'][status_code] += 1
+            
+            # 打印响应信息
+            try:
+                response_data = send_response.json()
+                logger.info(f"响应: {status_code} - 内容: {truncate_text(response_data)}")
+            except:
+                logger.info(f"响应: {status_code} - 内容: {truncate_text(send_response.text)}")
             
             send_response.raise_for_status()
             elapsed = time.time() - start_time
@@ -246,10 +320,14 @@ class LoadTester:
         conversation_id = None
         try:
             # 获取conversation list
+            url = f"{self.base_url}/conversation/list"
+            payload = {}
+            logger.info(f"请求: POST {url} - 载荷: {truncate_text(payload)}")
+            
             conversation_list_response = requests.post(
-                f"{self.base_url}/conversation/list", 
+                url, 
                 headers=self.headers, 
-                json={}
+                json=payload
             )
             
             # 记录状态码统计
@@ -258,11 +336,18 @@ class LoadTester:
                 self.stats['status_codes'][status_code] = 0
             self.stats['status_codes'][status_code] += 1
             
+            # 打印响应信息
+            try:
+                response_data = conversation_list_response.json()
+                logger.info(f"响应: {status_code} - 内容: {truncate_text(response_data)}")
+            except:
+                logger.info(f"响应: {status_code} - 内容: {truncate_text(conversation_list_response.text)}")
+            
             conversation_list_response.raise_for_status()
             self.stats['success_requests'] += 1
             
             # 从响应中获取对话列表
-            result = conversation_list_response.json().get('result', [])
+            result = response_data.get('result', [])
             if result:
                 self.stats['requests_with_data'] += 1
                 # 随机选择一个对话ID
@@ -272,10 +357,14 @@ class LoadTester:
             else:
                 logger.warning("未找到现有对话，创建新对话")
                 # 如果没有现有对话，创建一个新对话
+                url = f"{self.base_url}/conversation/create"
+                payload = {}
+                logger.info(f"请求: POST {url} - 载荷: {truncate_text(payload)}")
+                
                 create_response = requests.post(
-                    f"{self.base_url}/conversation/create", 
+                    url, 
                     headers=self.headers,
-                    json={}
+                    json=payload
                 )
                 
                 # 记录状态码统计
@@ -283,6 +372,13 @@ class LoadTester:
                 if status_code not in self.stats['status_codes']:
                     self.stats['status_codes'][status_code] = 0
                 self.stats['status_codes'][status_code] += 1
+                
+                # 打印响应信息
+                try:
+                    response_data = create_response.json()
+                    logger.info(f"响应: {status_code} - 内容: {truncate_text(response_data)}")
+                except:
+                    logger.info(f"响应: {status_code} - 内容: {truncate_text(create_response.text)}")
                 
                 create_response.raise_for_status()
                 self.stats['success_requests'] += 1
@@ -322,9 +418,12 @@ class LoadTester:
                 }
                 
                 # 发送消息
+                url = f"{self.base_url}/message/send"
+                logger.info(f"请求: POST {url} - 载荷: {truncate_text(message_data)}")
+                
                 start_time = time.time()
                 send_response = requests.post(
-                    f"{self.base_url}/message/send",
+                    url,
                     headers=self.headers,
                     json=message_data
                 )
@@ -334,6 +433,13 @@ class LoadTester:
                 if status_code not in self.stats['status_codes']:
                     self.stats['status_codes'][status_code] = 0
                 self.stats['status_codes'][status_code] += 1
+                
+                # 打印响应信息
+                try:
+                    response_data = send_response.json()
+                    logger.info(f"响应: {status_code} - 内容: {truncate_text(response_data)}")
+                except:
+                    logger.info(f"响应: {status_code} - 内容: {truncate_text(send_response.text)}")
                 
                 send_response.raise_for_status()
                 elapsed = time.time() - start_time
@@ -352,10 +458,14 @@ class LoadTester:
             
             # 获取任务列表
             try:
+                url = f"{self.base_url}/task/list"
+                payload = {"conversation_id": conversation_id}
+                logger.info(f"请求: POST {url} - 载荷: {truncate_text(payload)}")
+                
                 task_response = requests.post(
-                    f"{self.base_url}/task/list", 
+                    url, 
                     headers=self.headers, 
-                    json={}
+                    json=payload
                 )
                 
                 # 记录状态码统计
@@ -364,11 +474,18 @@ class LoadTester:
                     self.stats['status_codes'][status_code] = 0
                 self.stats['status_codes'][status_code] += 1
                 
+                # 打印响应信息
+                try:
+                    response_data = task_response.json()
+                    logger.info(f"响应: {status_code} - 内容: {truncate_text(response_data)}")
+                except:
+                    logger.info(f"响应: {status_code} - 内容: {truncate_text(task_response.text)}")
+                
                 task_response.raise_for_status()
                 self.stats['success_requests'] += 1
                 
                 # 处理响应
-                tasks = task_response.json().get('result', [])
+                tasks = response_data.get('result', [])
                 if tasks:
                     self.stats['requests_with_data'] += 1
                     logger.info(f"获取到 {len(tasks)} 个任务")
@@ -381,10 +498,14 @@ class LoadTester:
             
             # 获取消息列表
             try:
+                url = f"{self.base_url}/message/list"
+                payload = {"params": conversation_id}
+                logger.info(f"请求: POST {url} - 载荷: {truncate_text(payload)}")
+                
                 message_response = requests.post(
-                    f"{self.base_url}/message/list", 
+                    url, 
                     headers=self.headers, 
-                    json={"params": conversation_id}
+                    json=payload
                 )
                 
                 # 记录状态码统计
@@ -393,11 +514,18 @@ class LoadTester:
                     self.stats['status_codes'][status_code] = 0
                 self.stats['status_codes'][status_code] += 1
                 
+                # 打印响应信息
+                try:
+                    response_data = message_response.json()
+                    logger.info(f"响应: {status_code} - 内容: {truncate_text(response_data)}")
+                except:
+                    logger.info(f"响应: {status_code} - 内容: {truncate_text(message_response.text)}")
+                
                 message_response.raise_for_status()
                 self.stats['success_requests'] += 1
                 
                 # 处理响应
-                messages = message_response.json().get('result', [])
+                messages = response_data.get('result', [])
                 if messages:
                     self.stats['requests_with_data'] += 1
                     logger.info(f"获取到 {len(messages)} 条消息，对话ID: {conversation_id}")
