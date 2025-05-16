@@ -844,21 +844,21 @@ class ConversationServer:
     # 更新用户活跃状态
     self._update_user_activity(wallet_address)
     
-    # 直接访问用户会话管理器
-    user_session_manager = UserSessionManager.get_instance()
+    # # 直接访问用户会话管理器
+    # user_session_manager = UserSessionManager.get_instance()
     
     # 检查是否内存模式，如果是则使用旧方法获取
-    if user_session_manager._memory_mode:
+    if self.user_session_manager._memory_mode:
       manager = self._get_user_manager(request)
       return ListConversationResponse(result=manager.conversations)
     
     # 直接从数据库获取会话列表
     try:
       # 确保数据库连接有效
-      user_session_manager._ensure_db_connection()
+      # user_session_manager._ensure_db_connection()
       
       # 获取会话列表
-      db_conversations = user_session_manager.get_user_conversations(wallet_address)
+      db_conversations = self.user_session_manager.get_user_conversations(wallet_address)
       
       # 转换为Conversation对象列表
       from service.types import Conversation
@@ -871,7 +871,7 @@ class ConversationServer:
         messages_count = 0
         try:
           # 获取会话消息列表
-          conversation_messages = user_session_manager.get_conversation_messages(
+          conversation_messages = self.user_session_manager.get_conversation_messages(
             conversation_id=conversation_id,
             wallet_address=wallet_address
           )

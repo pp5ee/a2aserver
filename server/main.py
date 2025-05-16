@@ -397,7 +397,7 @@ async def rate_limit_middleware(request: Request, call_next):
         # 构建响应
         error_response = {
             "error": "Too Many Requests",
-            "message": f"请求频率超过限制。请在 {reset_seconds} 秒后重试。",
+            "message": f"Rate limit exceeded. Please try again in {reset_seconds} seconds.",
             "status": 429
         }
         
