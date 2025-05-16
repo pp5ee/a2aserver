@@ -206,19 +206,19 @@ class LoadTester:
             
             # 发送消息
             start_time = time.time()
-            response = requests.post(
+            send_response = requests.post(
                 f"{self.base_url}/message/send",
                 headers=self.headers,
                 json=message_data
             )
             
             # 记录状态码统计
-            status_code = response.status_code
+            status_code = send_response.status_code
             if status_code not in self.stats['status_codes']:
                 self.stats['status_codes'][status_code] = 0
             self.stats['status_codes'][status_code] += 1
             
-            response.raise_for_status()
+            send_response.raise_for_status()
             elapsed = time.time() - start_time
             self.stats['success_requests'] += 1
             
@@ -228,7 +228,7 @@ class LoadTester:
             self.stats['send_message_times'].append(elapsed)
             
             # 处理响应
-            result = response.json().get('result', {})
+            result = send_response.json().get('result', {})
             if result:
                 self.stats['requests_with_data'] += 1
                 
@@ -242,21 +242,173 @@ class LoadTester:
             return None
 
     def run_http_thread(self):
-        # 尝试获取现有对话
-        conversation_id = self.fetch_conversation_list()
-        
-        # 如果没有现有对话，创建一个新对话
-        if not conversation_id:
-            conversation_id = self.create_conversation()
+        # 首先获取对话列表
+        conversation_id = None
+        try:
+            # 获取conversation list
+            conversation_list_response = requests.post(
+                f"{self.base_url}/conversation/list", 
+                headers=self.headers, 
+                json={}
+            )
             
-        # 如果有对话ID，继续获取任务和消息
+            # 记录状态码统计
+            status_code = conversation_list_response.status_code
+            if status_code not in self.stats['status_codes']:
+                self.stats['status_codes'][status_code] = 0
+            self.stats['status_codes'][status_code] += 1
+            
+            conversation_list_response.raise_for_status()
+            self.stats['success_requests'] += 1
+            
+            # 从响应中获取对话列表
+            result = conversation_list_response.json().get('result', [])
+            if result:
+                self.stats['requests_with_data'] += 1
+                # 随机选择一个对话ID
+                conversation = random.choice(result)
+                conversation_id = conversation.get('conversation_id')
+                logger.info(f"使用现有对话: {conversation_id}")
+            else:
+                logger.warning("未找到现有对话，创建新对话")
+                # 如果没有现有对话，创建一个新对话
+                create_response = requests.post(
+                    f"{self.base_url}/conversation/create", 
+                    headers=self.headers,
+                    json={}
+                )
+                
+                # 记录状态码统计
+                status_code = create_response.status_code
+                if status_code not in self.stats['status_codes']:
+                    self.stats['status_codes'][status_code] = 0
+                self.stats['status_codes'][status_code] += 1
+                
+                create_response.raise_for_status()
+                self.stats['success_requests'] += 1
+                
+                # 从响应中获取新创建的对话ID
+                result = create_response.json().get('result', {})
+                if result:
+                    self.stats['requests_with_data'] += 1
+                    conversation_id = result.get('conversation_id')
+                    logger.info(f"创建了新对话: {conversation_id}")
+        except Exception as e:
+            self.stats['errors'] += 1
+            self.stats['failed_requests'] += 1
+            logger.error(f"获取/创建对话时出错: {str(e)}")
+            
+        # 如果有对话ID，继续执行后续逻辑
         if conversation_id:
-            # 发送一条测试消息
-            self.send_message(conversation_id)
+            self.conversation_ids.append(conversation_id)
             
-            # 获取任务和消息列表
-            self.fetch_task_list(conversation_id)
-            self.fetch_message_list(conversation_id)
+            # 发送一条测试消息
+            try:
+                # 准备消息内容
+                message_content = f"Test message {time.time()}"
+                
+                # 构建消息请求体
+                message_data = {
+                    "params": {
+                        "role": "user",
+                        "content": message_content,
+                        "parts": [
+                            {"type": "text", "text": message_content}
+                        ],
+                        "metadata": {
+                            "conversation_id": conversation_id
+                        }
+                    }
+                }
+                
+                # 发送消息
+                start_time = time.time()
+                send_response = requests.post(
+                    f"{self.base_url}/message/send",
+                    headers=self.headers,
+                    json=message_data
+                )
+                
+                # 记录状态码统计
+                status_code = send_response.status_code
+                if status_code not in self.stats['status_codes']:
+                    self.stats['status_codes'][status_code] = 0
+                self.stats['status_codes'][status_code] += 1
+                
+                send_response.raise_for_status()
+                elapsed = time.time() - start_time
+                self.stats['success_requests'] += 1
+                
+                # 记录统计信息
+                if 'send_message_times' not in self.stats:
+                    self.stats['send_message_times'] = []
+                self.stats['send_message_times'].append(elapsed)
+                
+                logger.info(f"消息发送成功到对话: {conversation_id}")
+            except Exception as e:
+                self.stats['errors'] += 1
+                self.stats['failed_requests'] += 1
+                logger.error(f"发送消息时出错: {str(e)}")
+            
+            # 获取任务列表
+            try:
+                task_response = requests.post(
+                    f"{self.base_url}/task/list", 
+                    headers=self.headers, 
+                    json={}
+                )
+                
+                # 记录状态码统计
+                status_code = task_response.status_code
+                if status_code not in self.stats['status_codes']:
+                    self.stats['status_codes'][status_code] = 0
+                self.stats['status_codes'][status_code] += 1
+                
+                task_response.raise_for_status()
+                self.stats['success_requests'] += 1
+                
+                # 处理响应
+                tasks = task_response.json().get('result', [])
+                if tasks:
+                    self.stats['requests_with_data'] += 1
+                    logger.info(f"获取到 {len(tasks)} 个任务")
+                else:
+                    logger.info("没有获取到任务")
+            except Exception as e:
+                self.stats['errors'] += 1
+                self.stats['failed_requests'] += 1
+                logger.error(f"获取任务列表时出错: {str(e)}")
+            
+            # 获取消息列表
+            try:
+                message_response = requests.post(
+                    f"{self.base_url}/message/list", 
+                    headers=self.headers, 
+                    json={"params": conversation_id}
+                )
+                
+                # 记录状态码统计
+                status_code = message_response.status_code
+                if status_code not in self.stats['status_codes']:
+                    self.stats['status_codes'][status_code] = 0
+                self.stats['status_codes'][status_code] += 1
+                
+                message_response.raise_for_status()
+                self.stats['success_requests'] += 1
+                
+                # 处理响应
+                messages = message_response.json().get('result', [])
+                if messages:
+                    self.stats['requests_with_data'] += 1
+                    logger.info(f"获取到 {len(messages)} 条消息，对话ID: {conversation_id}")
+                else:
+                    logger.info(f"没有获取到消息，对话ID: {conversation_id}")
+            except Exception as e:
+                self.stats['errors'] += 1
+                self.stats['failed_requests'] += 1
+                logger.error(f"获取消息列表时出错: {str(e)}")
+        else:
+            logger.error("无法获取或创建对话，无法继续执行后续操作")
 
     def on_ws_message(self, ws, message):
         logger.debug(f"WebSocket received: {message[:100]}...")

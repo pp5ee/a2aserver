@@ -322,7 +322,7 @@ class ConversationServer:
       
       # 如果当前存在任务，将消息添加到任务历史记录
       for task in manager.tasks:
-        if task.sessionId == conversation_id:
+        if task['sessionId'] == conversation_id:
           # 将用户消息添加到任务历史记录
           if not hasattr(task, 'history') or task.history is None:
             from common.types import Message as TaskMessage
