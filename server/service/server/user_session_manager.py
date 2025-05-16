@@ -381,7 +381,7 @@ class UserSessionManager:
         try:
             self._db_connection.ping(reconnect=True)
             cursor = self._db_connection.cursor()
-            cursor.execute("SELECT agent_url FROM user_agents WHERE wallet_address = %s", (wallet_address,))
+            cursor.execute("SELECT agent_url FROM user_agents WHERE wallet_address = %s and is_online = 'yes'", (wallet_address,))
             
             for (agent_url,) in cursor.fetchall():
                 try:
