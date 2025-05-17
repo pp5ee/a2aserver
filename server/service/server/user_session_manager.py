@@ -133,8 +133,8 @@ class UserSessionManager:
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 wallet_address VARCHAR(255) PRIMARY KEY,
-                created_at TIMESTAMP DEFAULT UTC_TIMESTAMP(),
-                last_active TIMESTAMP DEFAULT UTC_TIMESTAMP() ON UPDATE UTC_TIMESTAMP()
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             )
             ''')
             
