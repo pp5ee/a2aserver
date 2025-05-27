@@ -306,16 +306,35 @@ def convert_part(part: Part, tool_context: ToolContext):
     # Currently not considering plain text as files    
     file_id = part.file.name
 
-    file_bytes = None 
+    # 根据是否存在 bytes 或 uri 创建不同类型的 Part 对象
     if part.file.bytes:
-          file_bytes = base64.b64decode(part.file.bytes)    
-    file_part = types.Part(
-      inline_data=types.Blob(
-        mime_type=part.file.mimeType,
-        data=file_bytes))
+        # 如果有 bytes 数据，执行 base64 解码并创建 inline_data
+        file_bytes = base64.b64decode(part.file.bytes)
+        file_part = types.Part(
+            inline_data=types.Blob(
+                mime_type=part.file.mimeType,
+                data=file_bytes
+            )
+        )
+    elif part.file.uri:
+        # 如果有 uri 但没有 bytes，使用 from_uri 创建 Part
+        file_part = types.Part.from_uri(
+            file_uri=part.file.uri,
+            mime_type=part.file.mimeType
+        )
+    else:
+        # 如果既没有 bytes 也没有 uri，记录错误并使用空 Blob
+        logging.error("File part has neither bytes nor uri")
+        file_part = types.Part(
+            inline_data=types.Blob(
+                mime_type=part.file.mimeType,
+                data=None
+            )
+        )
+    
     tool_context.save_artifact(file_id, file_part)
     tool_context.actions.skip_summarization = True
     tool_context.actions.escalate = True
     return DataPart(data = {"artifact-file-id": file_id})
-  return f"Unknown type: {p.type}"
+  return f"Unknown type: {part.type}"
 

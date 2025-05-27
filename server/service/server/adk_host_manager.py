@@ -1095,10 +1095,13 @@ class ADKHostManager(ApplicationManager):
                                                           app_name=self.app_name,
                                                           filename = p.data['artifact-file-id'])
             file_data = file_part.inline_data
-            base64_data = base64.b64encode(file_data.data).decode('utf-8')
+            print(f"file_data in handle_function_response: {file_data}")
+            base64_data = None
+            if file_data.data:
+                  base64_data = base64.b64encode(file_data.data).decode('utf-8')
             parts.append(FilePart(
               file=FileContent(
-                  bytes=base64_data, mimeType=file_data.mime_type, name='artifact_file'
+                  bytes=base64_data, mimeType=file_data.mime_type, name='artifact_file',url=file_data.uri
               )
             ))
           else:
