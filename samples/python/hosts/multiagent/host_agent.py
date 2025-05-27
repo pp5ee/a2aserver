@@ -305,7 +305,10 @@ def convert_part(part: Part, tool_context: ToolContext):
     # Repackage A2A FilePart to google.genai Blob
     # Currently not considering plain text as files    
     file_id = part.file.name
-    file_bytes = base64.b64decode(part.file.bytes)    
+
+    file_bytes = None 
+    if part.file.bytes:
+          file_bytes = base64.b64decode(part.file.bytes)    
     file_part = types.Part(
       inline_data=types.Blob(
         mime_type=part.file.mimeType,
