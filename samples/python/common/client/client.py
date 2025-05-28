@@ -59,7 +59,7 @@ class A2AClient:
             try:
                 # Image generation could take time, adding timeout
                 response = await client.post(
-                    self.url, json=request.model_dump(), timeout=30, headers=self.headers
+                    self.url, json=request.model_dump(), timeout=600, headers=self.headers
                 )
                 response.raise_for_status()
                 return response.json()

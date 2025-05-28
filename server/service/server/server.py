@@ -358,7 +358,7 @@ class ConversationServer:
             # 增加超时时间到60秒，确保有足够的处理时间
             response = await asyncio.wait_for(
                 manager.process_message(message),
-                timeout=60.0
+                timeout=600.0
             )
             
             # 如果有响应且是多用户模式，通过WebSocket推送代理响应
